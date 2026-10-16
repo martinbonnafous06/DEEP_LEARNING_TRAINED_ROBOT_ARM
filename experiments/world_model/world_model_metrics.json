@@ -1,0 +1,11 @@
+{
+  "mean_ade_cm": 6.4,
+  "mean_fde_cm": 6.53,
+  "test_demos": [
+    "demo_6",
+    "demo_7",
+    "demo_8",
+    "demo_9"
+  ],
+  "n_test_episodes": 4
+}

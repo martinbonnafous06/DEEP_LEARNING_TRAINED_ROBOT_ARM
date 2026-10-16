@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Raw video and uncompressed frame extractions (>7 GB)
+data/frames/
+data/raw_videos/
+data/calib_images/
+
+# Upstream submodules / external library clones
+LIBERO/
+
+# Environments & virtualenvs
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Temporary files & IDE configs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.log
+.DS_Store
+Thumbs.db

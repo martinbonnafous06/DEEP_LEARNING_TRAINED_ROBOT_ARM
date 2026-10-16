@@ -1,0 +1,299 @@
+# ==============================================================================
+# Egocentric Video to LIBERO Retargeting Pipeline — Master Configuration
+# ==============================================================================
+# This configuration file controls all 5 stages of the pipeline:
+#   Stage 1: Camera Intrinsic Calibration (OpenCV)
+#   Stage 2: Visual SLAM & Table Plane Extraction (DROID-SLAM + Open3D RANSAC)
+#   Stage 3: 3D Hand Pose & Gripper State Estimation (HaMeR + Metric Scaling)
+#   Stage 4: Kinematics Retargeting & Trajectory Filtering (Fusion + SavGol + OSC)
+#   Stage 5: Dataset Export to LIBERO Benchmark (Robosuite/MuJoCo HDF5)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Global Settings
+# ------------------------------------------------------------------------------
+global:
+  project_name: "video_to_libero_retargeting"
+  project_root: "."
+  random_seed: 42
+  device: "cuda"                     # "cuda" or "cpu"
+  log_level: "INFO"                  # DEBUG, INFO, WARNING, ERROR
+
+# ------------------------------------------------------------------------------
+# Stage 1: Camera Intrinsic Calibration
+# Script: calibration.py
+# ------------------------------------------------------------------------------
+calibration:
+  # Chessboard geometry
+  board:
+    inner_corners_x: 9               # Number of internal corners horizontally
+    inner_corners_y: 6               # Number of internal corners vertically
+    square_size_m: 0.025             # Metric side length of a square in metres (25 mm)
+    pattern_type: "chessboard"       # "chessboard" (standard OpenCV)
+
+  # Image capture & corner detection
+  detection:
+    min_images_recommended: 15       # Minimum varied views for stable calibration
+    max_images_recommended: 25       # Upper limit before diminishing returns
+    subpixel_refinement:
+      enabled: true
+      window_size: [11, 11]          # Half-size of search window (2*N+1 x 2*N+1)
+      zero_zone: [-1, -1]            # Half-size of dead region (disabled)
+      max_iterations: 30             # Termination criterion: max iterations
+      epsilon: 0.001                 # Termination criterion: min error threshold
+    flags:
+      adaptive_thresh: true          # cv2.CALIB_CB_ADAPTIVE_THRESH
+      normalize_image: true          # cv2.CALIB_CB_NORMALIZE_IMAGE
+      fast_check: false              # cv2.CALIB_CB_FAST_CHECK (disabled for thoroughness)
+
+  # Solver & Quality Thresholds
+  solver:
+    calibration_flags: []            # Default camera model; e.g. CALIB_FIX_K3
+    max_rms_threshold_px: 1.0        # Reprojection error warning threshold (pixels)
+    ideal_rms_threshold_px: 0.5      # Target error for sub-millimeter tracking accuracy
+
+  # Input / Output File Paths
+  io:
+    image_dir: "data/calibration"    # Directory containing calibration images
+    output_dir: "outputs/calibration"
+    formats:
+      - "txt"                        # DROID-SLAM calib.txt format: "fx fy cx cy"
+      - "npz"                        # Compressed numpy archive (K, dist, rvecs, tvecs, rms)
+      - "json"                       # Human-readable JSON archive
+    calib_txt_name: "calib.txt"
+    calib_npz_name: "calibration.npz"
+    calib_json_name: "calibration.json"
+  visualize: false                   # Launch OpenCV window comparing original vs undistorted
+
+# ------------------------------------------------------------------------------
+# Stage 2: Visual SLAM & Table Plane Extraction
+# Script: camera_tracking.py
+# ------------------------------------------------------------------------------
+slam:
+  # Video Frame Preprocessing
+  frame_extraction:
+    source_video: "data/raw_video.mp4"
+    frames_dir: "data/frames"
+    target_fps: 30                   # Egocentric capture frame rate
+    image_format: "png"              # Lossless frame extraction
+    naming_pattern: "frame_%06d.png"
+
+  # DROID-SLAM Parameters
+  droid_slam:
+    script_path: "./third_party/DROID-SLAM/demo.py"
+    weights_path: "./third_party/DROID-SLAM/droid.pth"
+    buffer: 512                      # Frame buffer size
+    image_size: [384, 512]           # Processing resolution [height, width]
+    disable_vis: true                # Run headless inside subprocess
+    beta: 0.3                        # Weight of proximity graph edge
+    warmup: 8                        # Number of initial frames for bootstrap
+    keyframe_thresh: 4.0             # Distance threshold for keyframe selection
+    frontend_window: 25              # Sliding window size for local bundle adjustment
+    frontend_thresh: 16.0            # Disparity threshold for local graph edges
+    backend_thresh: 22.0             # Disparity threshold for global loop closure
+    upsample: false                  # Full resolution flow upsampling (memory intensive)
+
+  # Point Cloud Extraction
+  point_cloud:
+    depth_fallback: true             # Reconstruct 3D points from dense SLAM depth maps
+    voxel_size_m: 0.005              # Downsampling voxel size (5 mm)
+    depth_min_m: 0.1                 # Minimum valid depth distance
+    depth_max_m: 2.5                 # Maximum valid depth distance (ignore background)
+    bundled_filenames:
+      - "pointcloud.ply"
+      - "pointcloud.pcd"
+      - "reconstruction.ply"
+
+  # Table Plane Detection (RANSAC via Open3D)
+  ransac_plane:
+    distance_threshold_m: 0.01       # 10 mm inlier distance threshold
+    ransac_n: 3                      # Minimum points sampled per iteration
+    num_iterations: 1000             # RANSAC trial iterations
+    min_inlier_ratio: 0.15           # Expected minimum table surface representation
+
+  # Table Coordinate Frame Alignment
+  alignment:
+    align_normal_to_z: true          # Rotate plane normal to target [0, 0, 1]
+    invert_if_negative_z: true       # Ensure plane normal points upward
+    set_table_surface_z_zero: true   # Translate so table top surface lies exactly at Z = 0.0
+
+  # Input / Output Settings
+  io:
+    calib_txt: "outputs/calibration/calib.txt"
+    output_dir: "outputs/camera_tracking"
+    poses_filename: "poses.npy"
+    camera_poses_npz: "camera_poses.npz"
+    table_transform_npz: "table_transform.npz"
+    pointcloud_ply: "scene_pointcloud.ply"
+  visualize: false                   # Launch Open3D interactive viewer for plane check
+
+# ------------------------------------------------------------------------------
+# Stage 3: 3D Hand Pose & Gripper State Estimation
+# Script: hand_tracking.py
+# ------------------------------------------------------------------------------
+hand_tracking:
+  # HaMeR Subprocess Configuration
+  hamer:
+    script_path: "./third_party/hamer/demo.py"
+    checkpoint_path: "./third_party/hamer/hamer_ckpts/hamer_vit_b.pth"
+    batch_size: 16                   # Batch size for ViT backbone feature extraction
+    rescaled_image_size: 256         # Square crop feed resolution
+    detector: "vitdet"               # Hand/Person bounding box detector ("vitdet" or "yolo")
+    save_mesh: false                 # Do not save heavy OBJ meshes to save disk space
+
+  # MANO Parametric Hand Geometry & Keypoints
+  mano:
+    num_joints: 21                   # MANO 21-joint skeleton topology
+    wrist_joint_idx: 0               # Root wrist joint index
+    thumb_tip_idx: 4                 # Thumb fingertip joint index
+    index_tip_idx: 8                 # Index fingertip joint index
+    middle_mcp_idx: 9                # Middle finger metacarpophalangeal (MCP) joint index
+
+  # Metric Scale Anchoring
+  metric_scale:
+    enabled: true
+    baseline_l_ref_m: 0.085          # Ground-truth human wrist-to-middle-MCP distance (85 mm)
+    anchor_joint_a: 0                # Wrist joint index
+    anchor_joint_b: 9                # Middle MCP joint index
+    smoothing_scale_factor: true     # Apply temporal median filter to scale factor s
+
+  # Gripper Aperture & Action State
+  gripper:
+    pinch_threshold_m: 0.04          # 40 mm distance threshold between thumb & index tip
+    closed_action: 1.0               # Gripper action value when pinched (closed)
+    open_action: -1.0                # Gripper action value when released (open)
+    continuous:
+      min_aperture_m: 0.015          # Fully closed reference distance (15 mm)
+      max_aperture_m: 0.085          # Fully open reference distance (85 mm)
+      clamp: true                    # Clamp normalized continuous values to [0.0, 1.0]
+
+  # Visualization & Logging
+  visualization:
+    rerun_enabled: false             # Launch Rerun SDK 3D temporal stream
+    rerun_app_id: "hamer_hand_tracking"
+    log_mesh: false
+    log_skeleton: true
+    log_pinch_metric: true
+
+  # Input / Output Settings
+  io:
+    frames_dir: "data/frames"
+    output_dir: "outputs/hand_tracking"
+    output_npz: "hand_poses.npz"
+
+# ------------------------------------------------------------------------------
+# Stage 4: Kinematics Retargeting & Trajectory Filtering
+# Script: kinematics_retargeting.py
+# ------------------------------------------------------------------------------
+retargeting:
+  # Robot Base to Table Coordinate Setup
+  robot_frame:
+    # Rigid transformation mapping the table origin to Franka Emika Panda base origin
+    # Represents the table sitting 0.75m in front of and 0.05m below the robot base
+    default_transform_matrix:
+      - [1.0, 0.0, 0.0, 0.75]
+      - [0.0, 1.0, 0.0, 0.00]
+      - [0.0, 0.0, 1.0, -0.05]
+      - [0.0, 0.0, 0.0, 1.00]
+    translation: [0.75, 0.00, -0.05] # [x, y, z] in metres
+    rotation_rpy: [0.0, 0.0, 0.0]    # [roll, pitch, yaw] in radians
+    custom_transform_path: null      # Optional path to a .npy (4x4) transform matrix
+
+  # Temporal Resampling
+  resampling:
+    source_fps: 30.0                 # Input camera tracking / HaMeR frequency (30 Hz)
+    target_fps: 20.0                 # Target LIBERO / Robosuite control frequency (20 Hz)
+    translation_interpolation: "cubic_spline"  # scipy.interpolate.CubicSpline
+    rotation_interpolation: "slerp"            # scipy.spatial.transform.Slerp (unit quat)
+    gripper_interpolation: "cubic_spline"      # Clipped to [0.0, 1.0]
+
+  # Trajectory Smoothing (Savitzky-Golay Filter)
+  smoothing:
+    enabled: true
+    window_length: 15                # Filter window length (must be odd, adapted if N < 15)
+    polyorder: 3                     # Polynomial fitting order
+    rotation_representation: "rotvec" # Filter in Lie algebra so(3) rotation vector space
+    clip_gripper: true
+
+  # Operational Space Control (OSC) Action Deltas
+  action_generation:
+    control_type: "OSC_POSE"         # 7-DOF end-effector Cartesian delta controller
+    action_dim: 7                    # [dx, dy, dz, drx, dry, drz, gripper_state]
+    delta_translation:
+      scale: 1.0                     # Translation gain / scaling factor
+      max_limit_m: 0.05              # Safety threshold: clamp max step translation (5 cm)
+    delta_rotation:
+      scale: 1.0                     # Axis-angle rotation gain
+      max_limit_rad: 0.25            # Safety threshold: clamp max step rotation (~14 deg)
+    gripper_mapping:
+      format: "binary"               # "binary" ([-1, 1]) or "continuous" ([0, 1])
+      open_value: -1.0               # Robosuite convention: -1 = open
+      close_value: 1.0               # Robosuite convention: +1 = closed
+
+  # Input / Output Settings
+  io:
+    camera_poses_npz: "outputs/camera_tracking/camera_poses.npz"
+    table_transform_npz: "outputs/camera_tracking/table_transform.npz"
+    hand_poses_npz: "outputs/hand_tracking/hand_poses.npz"
+    output_dir: "outputs/retargeting"
+    output_npz: "retargeted.npz"
+
+# ------------------------------------------------------------------------------
+# Stage 5: Dataset Export to LIBERO Benchmark
+# Script: dataset_exporter.py
+# ------------------------------------------------------------------------------
+dataset_export:
+  # LIBERO / Robosuite Target Environment
+  environment:
+    suite: "libero"                  # "libero" or "robosuite"
+    env_name: "LIBERO_OBJECT"        # Environment benchmark suite: LIBERO_OBJECT, LIBERO_SPATIAL, etc.
+    robot: "Panda"                   # Standard 7-DOF Franka Panda arm
+    control_freq: 20                 # Control execution frequency in Hz
+    controller_type: "OSC_POSE"      # Operational space pose impedance controller
+
+  # Camera Observation Specifications
+  cameras:
+    frame_dimensions:
+      height: 84                     # Standard LIBERO visual representation height (px)
+      width: 84                      # Standard LIBERO visual representation width (px)
+      channels: 3                    # RGB channels
+    agentview:
+      enabled: true
+      key_name: "agentview_rgb"
+      frames_dir: "data/frames/agentview" # Directory of third-person or main video frames
+    eye_in_hand:
+      enabled: true
+      key_name: "robot0_eye_in_hand_rgb"
+      frames_dir: "data/frames/wrist"     # Directory of wrist camera frames (or zero fallback)
+
+  # HDF5 Schema Layout
+  hdf5_schema:
+    root_group: "data"
+    demo_name: "demo_0"              # Target demonstration group key inside HDF5
+    compression: "gzip"              # Dataset compression filter
+    compression_level: 4             # Balanced speed vs compression ratio (1-9)
+    observation_keys:
+      - "obs/agentview_rgb"           # (N, 84, 84, 3) uint8
+      - "obs/robot0_eye_in_hand_rgb"  # (N, 84, 84, 3) uint8
+      - "obs/robot0_eef_pos"          # (N, 3) float32 end-effector position
+      - "obs/robot0_eef_quat"         # (N, 4) float32 end-effector quaternion [x, y, z, w]
+      - "obs/robot0_joint_pos"        # (N, 7) float32 Panda arm joint positions (from sim replay)
+      - "obs/robot0_gripper_qpos"     # (N, 2) float32 finger joint positions
+    root_attributes:
+      total_demos: 1
+      env_name: "LIBERO_OBJECT"
+      libero_version: "1.0.0"
+
+  # MuJoCo Simulation Replay Settings
+  simulation_replay:
+    enabled: false                   # Replay actions in live Robosuite environment
+    has_renderer: false              # Headless physics execution
+    has_offscreen_renderer: false    # Offscreen image rendering
+    use_camera_obs: false            # Set true to re-render synthetic camera observations
+    horizon: 500                     # Max episode timesteps
+    ignore_done: true                # Continue full trajectory replay even if early success
+
+  # Input / Output Settings
+  io:
+    retargeted_npz: "outputs/retargeting/retargeted.npz"
+    output_hdf5: "outputs/datasets/libero_dataset.hdf5"

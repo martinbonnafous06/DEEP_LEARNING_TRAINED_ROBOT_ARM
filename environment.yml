@@ -1,0 +1,70 @@
+# ==============================================================================
+# Conda Environment Specification for Egocentric Video to LIBERO Retargeting
+# ==============================================================================
+# Usage:
+#   conda env create -f environment.yml
+#   conda activate libero-retargeting
+# ==============================================================================
+
+name: libero-retargeting
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Base runtime
+  - python>=3.10,<3.11
+  - pip>=23.2
+  - setuptools
+  - wheel
+
+  # PyTorch & CUDA acceleration
+  # Note: Adjust cuda toolkit version according to host GPU driver (e.g. 11.8 or 12.1)
+  - pytorch>=2.1.0
+  - torchvision>=0.16.0
+  - pytorch-cuda=11.8
+
+  # Scientific & Numerical computing
+  - numpy>=1.23.0,<2.0.0
+  - scipy>=1.10.0
+
+  # Point Clouds & 3D Geometry
+  - open3d>=0.17.0
+
+  # Data serialization & configuration
+  - h5py>=3.9.0
+  - pyyaml>=6.0
+  - pillow>=9.5.0
+  - matplotlib>=3.7.0
+
+  # Additional system & dev utilities
+  - tqdm
+  - requests
+
+  # Packages installed via pip
+  - pip:
+      # Computer vision
+      - opencv-python>=4.8.0
+
+      # Coordinate frames & 3D transformations
+      - transforms3d>=0.4.1
+
+      # 3D Temporal Logging & Interactive Visualisation
+      - rerun-sdk>=0.14.0
+
+      # Robot Simulation & Control Benchmarks
+      - mujoco>=3.0.0
+      - robosuite>=1.4.0
+
+      # HaMeR dependencies
+      - smplx
+      - chumpy
+      - timm
+      - yacs
+      - scikit-image
+
+      # DROID-SLAM dependencies
+      - lietorch; sys_platform != "win32"

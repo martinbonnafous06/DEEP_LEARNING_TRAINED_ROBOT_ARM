@@ -1,0 +1,42 @@
+# ============================================================
+# Video-to-LIBERO Trajectory Pipeline — Dependencies
+# ============================================================
+# Core deep learning
+torch>=2.1.0
+torchvision
+
+# Numerical / scientific computing
+numpy>=1.23.0
+scipy>=1.10.0
+
+# Computer vision & imaging
+opencv-python>=4.8.0
+pillow>=9.0.0
+matplotlib>=3.5.0
+
+# 3D geometry & point clouds
+open3d>=0.17.0
+
+# Dataset I/O & Configuration
+h5py>=3.9.0
+pyyaml>=6.0
+
+# Coordinate / transform utilities
+transforms3d>=0.4.1
+
+# Visualization / debugging
+rerun-sdk>=0.14.0
+
+# Robot simulation
+robosuite
+mujoco>=3.0.0
+
+# ============================================================
+# External submodules (install separately — see README)
+# ============================================================
+# DROID-SLAM  →  git clone --recursive https://github.com/princeton-vl/DROID-SLAM third_party/DROID-SLAM
+#                cd third_party/DROID-SLAM && python setup.py install
+#
+# HaMeR       →  git clone https://github.com/geopavlakos/hamer third_party/hamer
+#                pip install -e third_party/hamer
+#                # Also requires MANO model files (see HaMeR README for download links)

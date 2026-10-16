@@ -1,0 +1,9 @@
+{
+  "total_frames": 86,
+  "detected_frames": 86,
+  "detection_ratio": 1.0,
+  "marker_id": 0,
+  "marker_size_metres": 0.05,
+  "dictionary_name": "DICT_ARUCO_ORIGINAL",
+  "output_dir": "data\\slam"
+}
