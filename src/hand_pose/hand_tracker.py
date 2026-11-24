@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
+from ..utils.coordinates import adapt_camera_intrinsics
 from ..utils.io import get_sorted_image_files
 
 logger = logging.getLogger("hand_pose")
@@ -168,9 +170,12 @@ def enforce_anatomical_scale(
     scale = float(l_ref / median_dist)
     logger.info("Metric scale anchor: median dist=%.4f m -> scale factor=%.4f", median_dist, scale)
 
-    scaled_keypoints = keypoints_3d * scale
+    scaled_keypoints = keypoints_3d.copy()
     scaled_transforms = transforms.copy()
-    scaled_transforms[:, :3, 3] *= scale
+    # Only scale translation if transforms are not already placed in metric camera space
+    if np.median(transforms[:, 2, 3]) < 0.15:
+        scaled_keypoints = keypoints_3d * scale
+        scaled_transforms[:, :3, 3] *= scale
 
     return scaled_keypoints, scaled_transforms, scale
 
@@ -296,6 +301,53 @@ def track_hands_mediapipe(
         )
         tasks_detector = mp_vision.HandLandmarker.create_from_options(options)
 
+    calib_json = Path("data/calibration/calibration.json")
+    calib_txt = Path("data/calibration/calib.txt")
+    fx, fy, cx, cy = 1500.0, 1500.0, 960.0, 540.0
+    first_frame = cv2.imread(str(image_paths[0]))
+    if first_frame is not None:
+        h_f, w_f = first_frame.shape[:2]
+        fx, fy, cx, cy = w_f * 1.2, w_f * 1.2, w_f / 2.0, h_f / 2.0
+        if calib_json.is_file():
+            try:
+                with open(calib_json, "r") as f_c:
+                    meta = json.load(f_c)
+                orig_w = int(meta.get("image_width", w_f))
+                orig_h = int(meta.get("image_height", h_f))
+                fx_raw = float(meta["camera_matrix"][0][0])
+                fy_raw = float(meta["camera_matrix"][1][1])
+                cx_raw = float(meta["camera_matrix"][0][2])
+                cy_raw = float(meta["camera_matrix"][1][2])
+                fx, fy, cx, cy = adapt_camera_intrinsics(fx_raw, fy_raw, cx_raw, cy_raw, orig_w, orig_h, w_f, h_f)
+                logger.info("MediaPipe tracking using orientation-aware scaled intrinsics: fx=%.1f, fy=%.1f, cx=%.1f, cy=%.1f", fx, fy, cx, cy)
+            except Exception as e:
+                logger.warning("Could not parse calibration.json: %s", e)
+        elif calib_txt.is_file():
+            try:
+                from ..utils.io import load_calibration_txt
+                fx_t, fy_t, cx_t, cy_t = load_calibration_txt(calib_txt)
+                orig_w = 4000 if cx_t > w_f else w_f
+                orig_h = 2252 if cx_t > w_f else h_f
+                fx, fy, cx, cy = adapt_camera_intrinsics(fx_t, fy_t, cx_t, cy_t, orig_w, orig_h, w_f, h_f)
+            except Exception:
+                pass
+
+    # Optional camera poses from Stage 2 for tabletop depth grounding
+    T_w2c_all = None
+    cam_cand = [
+        Path("data/slam") / frames_dir.name / "camera_poses.npz",
+        Path("data/slam/camera_poses.npz"),
+    ]
+    for c_path in cam_cand:
+        if c_path.is_file():
+            try:
+                cam_data = np.load(c_path)
+                T_w2c_all = cam_data["T_world_to_cam"]
+                logger.info("Loaded camera poses from %s for table-plane depth grounding", c_path)
+                break
+            except Exception:
+                pass
+
     for i, p in enumerate(image_paths):
         img_bgr = cv2.imread(str(p))
         if img_bgr is None:
@@ -325,39 +377,68 @@ def track_hands_mediapipe(
             kpts = np.array([[lm.x, lm.y, lm.z] for lm in world_landmarks], dtype=np.float64)  # (21, 3)
 
             # Derive 3D wrist orientation matrix from palm vectors
-            # v_forward: wrist -> middle MCP
             v_forward = kpts[MIDDLE_MCP_IDX] - kpts[WRIST_IDX]
             norm_f = np.linalg.norm(v_forward)
             v_forward = v_forward / norm_f if norm_f > 1e-9 else np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
-            # v_side: index MCP -> pinky MCP (transverse)
             v_side = kpts[17] - kpts[5]
             norm_s = np.linalg.norm(v_side)
             v_side = v_side / norm_s if norm_s > 1e-9 else np.array([1.0, 0.0, 0.0], dtype=np.float64)
 
-            # v_normal: palm normal via cross product
             v_normal = np.cross(v_forward, v_side)
             norm_n = np.linalg.norm(v_normal)
             v_normal = v_normal / norm_n if norm_n > 1e-9 else np.array([0.0, 1.0, 0.0], dtype=np.float64)
 
-            # Re-orthogonalize v_side
             v_side = np.cross(v_normal, v_forward)
             v_side /= np.linalg.norm(v_side)
 
             R_wrist = np.column_stack([v_side, v_normal, v_forward])
-            t_wrist = kpts[WRIST_IDX]
+
+            # Compute true metric depth (Z_c) in camera frame
+            z_metric = 0.65
+            if pixel_landmarks is not None:
+                lm_w = pixel_landmarks[WRIST_IDX]
+                lm_m = pixel_landmarks[MIDDLE_MCP_IDX]
+                px_w = np.array([lm_w.x * w, lm_w.y * h], dtype=np.float64)
+                px_m = np.array([lm_m.x * w, lm_m.y * h], dtype=np.float64)
+                px_dist = float(np.linalg.norm(px_m - px_w))
+
+                f_mean = (fx + fy) / 2.0
+                z_apparent = float((f_mean * L_REF_METRES) / max(px_dist, 5.0))
+                z_metric = z_apparent
+
+                if T_w2c_all is not None and i < len(T_w2c_all):
+                    T_tab2cam = T_w2c_all[i]
+                    n_table = T_tab2cam[:3, 2]
+                    p_table = T_tab2cam[:3, 3]
+                    # Unnormalized camera ray so z_plane directly represents camera Z_c coordinate
+                    ray_cam = np.array([(px_w[0] - cx) / fx, (px_w[1] - cy) / fy, 1.0], dtype=np.float64)
+                    denom = float(np.dot(n_table, ray_cam))
+                    if abs(denom) > 1e-4:
+                        h_wrist = 0.065
+                        z_plane = float((np.dot(n_table, p_table) + h_wrist) / denom)
+                        if 0.2 < z_plane < 1.8:
+                            z_metric = 0.55 * z_plane + 0.45 * z_apparent
+
+                X_c = ((px_w[0] - cx) / fx) * z_metric
+                Y_c = ((px_w[1] - cy) / fy) * z_metric
+                Z_c = z_metric
+                t_wrist = np.array([X_c, Y_c, Z_c], dtype=np.float64)
+            else:
+                t_wrist = kpts[WRIST_IDX]
+
+            kpts_metric = t_wrist + (kpts - kpts[WRIST_IDX])
 
             T_cam_to_hand = np.eye(4, dtype=np.float64)
             T_cam_to_hand[:3, :3] = R_wrist
             T_cam_to_hand[:3, 3] = t_wrist
 
-            keypoints_list[i] = kpts
+            keypoints_list[i] = kpts_metric
             transforms_list[i] = T_cam_to_hand
 
             if save_debug and (i % 10 == 0 or i == 0):
                 annotated = img_bgr.copy()
                 if pixel_landmarks is not None:
-                    # Draw landmarks on image
                     pts = [(int(lm.x * w), int(lm.y * h)) for lm in pixel_landmarks]
                     for conn in HAND_CONNECTIONS:
                         cv2.line(annotated, pts[conn[0]], pts[conn[1]], (0, 255, 0), 2)

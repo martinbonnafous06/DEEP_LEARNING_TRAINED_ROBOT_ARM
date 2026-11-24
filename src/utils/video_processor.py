@@ -300,6 +300,8 @@ def extract_frames_from_video(
 
             if curr_src_idx in sample_indices:
                 t_sec = float(curr_src_idx / source_fps)
+                if saved_count == 0:
+                    source_height, source_width = frame.shape[:2]
                 processed = process_frame(
                     frame_bgr=frame,
                     target_size=target_size,

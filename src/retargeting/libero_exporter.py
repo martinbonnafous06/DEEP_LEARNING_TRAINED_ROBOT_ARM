@@ -19,63 +19,37 @@ logger = logging.getLogger("libero_exporter")
 def try_robosuite_replay(
     actions: npt.NDArray[np.float32],
     env_name: str = "Lift",
+    ee_pos: Optional[npt.NDArray[np.float32]] = None,
 ) -> Optional[dict[str, npt.NDArray[np.float32]]]:
-    """Replay trajectory actions in a simulated Robosuite environment to capture MuJoCo states.
+    """Replay trajectory actions in a simulated Robosuite/Panda environment to capture states.
 
-    Records pre-action observations aligned with each action index.
+    Records pre-action observations aligned with each action index using the
+    closed-loop object-aligned grasping controller.
 
     Args:
         actions: Array of shape (N, 7) float32 delta actions.
         env_name: Robosuite environment name (e.g. 'Lift', 'PickPlaceCan').
+        ee_pos: Optional (N, 3) retargeted EEF positions.
 
     Returns:
-        Dict with keys 'joint_states', 'ee_pos', 'ee_ori', or None if Robosuite is unavailable.
+        Dict with keys 'joint_states', 'ee_pos', 'ee_ori', or None if replay fails.
     """
-    import importlib.util
-    if importlib.util.find_spec("robosuite") is None:
-        logger.info("robosuite is not installed. Skipping simulation replay.")
-        return None
-
     try:
-        import robosuite as suite
-        env = suite.make(
+        from .sim_replay import execute_panda_manipulation_in_sim
+
+        res = execute_panda_manipulation_in_sim(
+            actions=actions,
+            demo_eef_pos=ee_pos,
             env_name=env_name,
-            robots="Panda",
-            has_renderer=False,
-            has_offscreen_renderer=False,
-            use_camera_obs=False,
-            control_freq=20,
+            render_video=False,
         )
-        obs = env.reset()
-
-        n = len(actions)
-        joint_states: list[npt.NDArray[np.float32]] = []
-        ee_positions: list[npt.NDArray[np.float32]] = []
-        ee_oris: list[npt.NDArray[np.float32]] = []
-
-        for i, action in enumerate(actions):
-            # Record observation before stepping action i
-            joint_states.append(obs.get("robot0_joint_pos", np.zeros(7, dtype=np.float32)))
-            ee_positions.append(obs.get("robot0_eef_pos", np.zeros(3, dtype=np.float32)))
-            ee_oris.append(obs.get("robot0_eef_quat", np.zeros(4, dtype=np.float32)))
-
-            obs, _reward, done, _info = env.step(action)
-            if done and i < n - 1:
-                logger.info("Environment indicated episode done at step %d / %d.", i, n)
-                for _ in range(i + 1, n):
-                    joint_states.append(joint_states[-1])
-                    ee_positions.append(ee_positions[-1])
-                    ee_oris.append(ee_oris[-1])
-                break
-
-        env.close()
         return {
-            "joint_states": np.array(joint_states, dtype=np.float32),
-            "ee_pos": np.array(ee_positions, dtype=np.float32),
-            "ee_ori": np.array(ee_oris, dtype=np.float32),
+            "joint_states": res.joint_states,
+            "ee_pos": res.ee_pos,
+            "ee_ori": res.ee_ori,
         }
     except Exception as exc:
-        logger.warning("Robosuite replay failed (%s); continuing without simulation observations.", exc)
+        logger.warning("Simulation replay failed (%s); continuing without simulation observations.", exc)
         return None
 
 
@@ -238,7 +212,7 @@ def export_libero_dataset(
                 actions = np.concatenate([actions, pad], axis=1)
 
     # Optional Robosuite replay
-    sim_obs = try_robosuite_replay(actions, env_name=env_name)
+    sim_obs = try_robosuite_replay(actions, env_name=env_name, ee_pos=ee_pos)
 
     # Load RGB frames
     agentview_rgb = load_rgb_frames(agentview_dir, n_actions, height=frame_height, width=frame_width)

@@ -197,7 +197,14 @@ def load_rgb_frames(
     for p in paths[:n_frames]:
         try:
             with Image.open(p) as img:
-                resized = img.convert("RGB").resize((width, height), Image.BILINEAR)
+                img = img.convert("RGB")
+                w_img, h_img = img.size
+                if w_img != h_img and width == height:
+                    min_dim = min(w_img, h_img)
+                    left = (w_img - min_dim) // 2
+                    top = (h_img - min_dim) // 2
+                    img = img.crop((left, top, left + min_dim, top + min_dim))
+                resized = img.resize((width, height), Image.BILINEAR)
                 frames.append(np.array(resized, dtype=np.uint8))
         except Exception:
             continue

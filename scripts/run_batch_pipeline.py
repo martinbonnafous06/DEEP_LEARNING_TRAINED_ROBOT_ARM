@@ -113,11 +113,22 @@ def run_pipeline_for_demo(
 
     # 3. Stage 4: Geometric Kinematics Retargeting to Franka Panda Base
     logger.info("[3/4] Stage 4: Retargeting Kinematics to Robot Base & Computing OSC Actions...")
+    src_fps = tgt_fps
+    meta_json = demo_dir / "metadata.json"
+    if meta_json.is_file():
+        try:
+            import json
+            with open(meta_json, "r", encoding="utf-8") as f_meta:
+                src_fps = float(json.load(f_meta).get("effective_fps", tgt_fps))
+        except Exception:
+            src_fps = tgt_fps
+
     retarget_npz = process_kinematics_retargeting(
         camera_poses=slam_dir / "camera_poses.npz",
         table_transform=slam_dir / "table_transform.npz",
         hand_poses=hand_npz,
         output_dir=retarget_dir,
+        src_fps=src_fps,
         tgt_fps=tgt_fps,
     )
 
@@ -256,8 +267,8 @@ def main() -> int:
                 naming_scheme="index",
                 prefix="demo_",
                 target_fps=args.target_fps,
-                target_size=tuple(args.frame_size),
-                center_crop=True,
+                target_size=None,
+                center_crop=False,
             )
 
     demo_dirs = get_demo_directories(frames_root)

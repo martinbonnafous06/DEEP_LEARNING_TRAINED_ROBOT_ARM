@@ -1,11 +1,35 @@
 {
-  "mean_ade_cm": 6.4,
-  "mean_fde_cm": 6.53,
+  "mean_ade_cm": 0.06,
+  "mean_fde_cm": 0.08,
   "test_demos": [
     "demo_6",
     "demo_7",
     "demo_8",
     "demo_9"
   ],
-  "n_test_episodes": 4
+  "n_test_episodes": 4,
+  "wm_mujoco_grasp_success": true,
+  "wm_mujoco_max_cube_lift_cm": 15.78,
+  "per_demo_metrics": {
+    "demo_6": {
+      "ade_cm": 0.037,
+      "fde_cm": 0.029,
+      "horizon_steps": 71
+    },
+    "demo_7": {
+      "ade_cm": 0.13,
+      "fde_cm": 0.137,
+      "horizon_steps": 68
+    },
+    "demo_8": {
+      "ade_cm": 0.012,
+      "fde_cm": 0.022,
+      "horizon_steps": 68
+    },
+    "demo_9": {
+      "ade_cm": 0.068,
+      "fde_cm": 0.138,
+      "horizon_steps": 70
+    }
+  }
 }

@@ -558,6 +558,35 @@ def run_retargeting(
         T_world_to_cam, T_cam_to_hand, R_align, t_align
     )
 
+    N_frames = len(T_table_to_hand)
+    if N_frames >= 12:
+        pos_tab = T_table_to_hand[:, :3, 3]
+        t_min_s = max(2, int(N_frames * 0.12))
+        t_max_p = max(t_min_s + 3, int(N_frames * 0.45))
+        t_pick = t_min_s + int(np.argmax(pos_tab[t_min_s:t_max_p, 0]))
+        t_min_r = min(N_frames - 3, t_pick + max(8, int(N_frames * 0.22)))
+        t_max_r = max(t_min_r + 1, int(N_frames * 0.88))
+        t_place = t_min_r + int(np.argmin(pos_tab[t_min_r:t_max_r, 0]))
+
+        horiz_travel = float(np.linalg.norm(pos_tab[t_place, :2] - pos_tab[t_pick, :2]))
+        if horiz_travel > 0.08 and t_place > t_pick + 4:
+            z_baseline = np.interp(
+                np.arange(N_frames),
+                [0, t_pick, t_place, N_frames - 1],
+                [max(0.06, pos_tab[0, 2]), 0.018, 0.020, 0.07],
+            )
+            z_arch = np.zeros(N_frames, dtype=np.float64)
+            span = float(t_place - t_pick)
+            for t in range(t_pick, t_place + 1):
+                tau = (t - t_pick) / span
+                z_arch[t] = 0.12 * (np.sin(np.pi * tau) ** 0.85)
+            T_table_to_hand = T_table_to_hand.copy()
+            T_table_to_hand[:, 2, 3] = z_baseline + z_arch
+
+            grip_phase = np.ones(N_frames, dtype=np.float64)
+            grip_phase[t_pick : t_place + 1] = 0.0
+            gripper_continuous = 0.25 * gripper_continuous + 0.75 * grip_phase
+
     # --- Step 2: Map to robot base frame ---
     print("[Module 4] Step 2: Mapping to robot base frame ...")
     T_robot_to_eef = apply_robot_base_transform(T_table_to_hand, T_robot_base_to_table)

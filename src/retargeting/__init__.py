@@ -13,6 +13,15 @@ from .libero_exporter import (
     try_robosuite_replay,
     write_hdf5_dataset,
 )
+from .sim_replay import (
+    ManipulationPhaseIndices,
+    SimulationReplayResult,
+    build_object_aligned_target_trajectory,
+    detect_manipulation_phases,
+    execute_panda_manipulation_in_sim,
+    panda_forward_kinematics,
+    panda_inverse_kinematics_step,
+)
 
 __all__ = [
     "DEFAULT_T_ROBOT_BASE_TO_TABLE",
@@ -24,4 +33,11 @@ __all__ = [
     "write_hdf5_dataset",
     "print_hdf5_structure",
     "try_robosuite_replay",
+    "ManipulationPhaseIndices",
+    "SimulationReplayResult",
+    "detect_manipulation_phases",
+    "build_object_aligned_target_trajectory",
+    "execute_panda_manipulation_in_sim",
+    "panda_forward_kinematics",
+    "panda_inverse_kinematics_step",
 ]

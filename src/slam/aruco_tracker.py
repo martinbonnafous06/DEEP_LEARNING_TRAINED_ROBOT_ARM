@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from ..utils.coordinates import invert_transform_se3
+from ..utils.coordinates import adapt_camera_intrinsics, invert_transform_se3
 from ..utils.io import get_sorted_image_files, load_calibration_txt, save_camera_poses
 
 logger = logging.getLogger("aruco_tracker")
@@ -221,22 +221,48 @@ def track_camera_with_aruco(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    calib_json = Path(calib_txt).parent / "calibration.json"
+    orig_w, orig_h = 0, 0
+    if calib_json.is_file():
+        try:
+            with open(calib_json, "r") as f_json:
+                meta = json.load(f_json)
+                orig_w = int(meta.get("image_width", 0))
+                orig_h = int(meta.get("image_height", 0))
+                if dist_coeffs is None and "distortion_coefficients" in meta:
+                    dist_coeffs = np.array(meta["distortion_coefficients"], dtype=np.float64)
+        except Exception as e:
+            logger.warning("Could not read calibration.json: %s", e)
+
     fx, fy, cx, cy = load_calibration_txt(calib_txt)
+
+    image_paths = get_sorted_image_files(frames_dir)
+    if not image_paths:
+        raise ValueError(f"No image frames found in: {frames_dir}")
+
+    # Inspect first frame for true resolution and scale intrinsics
+    first_frame = cv2.imread(str(image_paths[0]))
+    if first_frame is not None:
+        h_frame, w_frame = first_frame.shape[:2]
+        if orig_w > 0 and orig_h > 0 and (orig_w != w_frame or orig_h != h_frame):
+            fx, fy, cx, cy = adapt_camera_intrinsics(fx, fy, cx, cy, orig_w, orig_h, w_frame, h_frame)
+            logger.info("Orientation-aware scaled camera matrix to match video %dx%d: fx=%.1f, fy=%.1f, cx=%.1f, cy=%.1f", w_frame, h_frame, fx, fy, cx, cy)
+        elif cx > w_frame:
+            # Fallback scaling if calibration was from 4000x2252 photos
+            fx, fy, cx, cy = adapt_camera_intrinsics(fx, fy, cx, cy, 4000, 2252, w_frame, h_frame)
+            logger.info("Fallback orientation-aware scaling camera matrix to match video %dx%d: fx=%.1f, fy=%.1f, cx=%.1f, cy=%.1f", w_frame, h_frame, fx, fy, cx, cy)
+
     camera_matrix = np.array([
         [fx, 0.0, cx],
         [0.0, fy, cy],
         [0.0, 0.0, 1.0],
     ], dtype=np.float64)
 
-    image_paths = get_sorted_image_files(frames_dir)
-    if not image_paths:
-        raise ValueError(f"No image frames found in: {frames_dir}")
-
     total_frames = len(image_paths)
     logger.info("Tracking camera using ArUco Tag ID %d across %d frames...", marker_id, total_frames)
 
-    # Store T_cam_to_tag for each frame
-    T_cam_to_tag_list: List[Optional[np.ndarray]] = [None] * total_frames
+    # Store T_world_to_cam (maps tabletop points to camera frame) for each frame
+    T_world_to_cam_list: List[Optional[np.ndarray]] = [None] * total_frames
     detected_count = 0
 
     debug_dir = out_dir / "aruco_debug"
@@ -261,8 +287,9 @@ def track_camera_with_aruco(
                     camera_matrix=camera_matrix,
                     dist_coeffs=dist_coeffs,
                 )
+                # T_c2m maps points from marker/table frame into camera coordinates: p_cam = T_c2m @ p_table
                 T_c2m = rvec_tvec_to_matrix(rvec, tvec)
-                T_cam_to_tag_list[i] = T_c2m
+                T_world_to_cam_list[i] = T_c2m
                 detected_count += 1
 
                 if save_annotated_debug_images and (i % 10 == 0 or i == 0):
@@ -288,26 +315,19 @@ def track_camera_with_aruco(
 
     # Forward/backward fill missing poses (if marker was briefly occluded by human hand)
     filled_poses: List[np.ndarray] = []
-    last_valid: Optional[np.ndarray] = None
+    first_valid_idx = next(i for i, p in enumerate(T_world_to_cam_list) if p is not None)
+    first_valid = T_world_to_cam_list[first_valid_idx]
 
-    # Find first valid pose
-    first_valid_idx = next(i for i, p in enumerate(T_cam_to_tag_list) if p is not None)
-    first_valid = T_cam_to_tag_list[first_valid_idx]
-
-    for p in T_cam_to_tag_list:
+    for p in T_world_to_cam_list:
         if p is not None:
             last_valid = p
             filled_poses.append(p)
         else:
-            # Impute using last known pose (or first valid if before detection)
             filled_poses.append(last_valid if last_valid is not None else first_valid)
 
-    # In our pipeline:
-    # World frame is defined as the table frame at Tag 0:
-    # T_cam_to_tag maps points in camera frame to tag/table frame.
-    # Therefore, T_world_to_cam = inv(T_cam_to_tag) maps world/table points to camera frame.
-    T_cam_to_tag_arr = np.array(filled_poses, dtype=np.float64)  # (N, 4, 4)
-    T_world_to_cam_arr = invert_transform_se3(T_cam_to_tag_arr)   # (N, 4, 4)
+    # In our pipeline, Tag 0 anchors the tabletop world coordinate frame:
+    # T_c2m maps table/world points to camera frame (p_cam = T_world_to_cam @ p_world).
+    T_world_to_cam_arr = np.array(filled_poses, dtype=np.float64)  # (N, 4, 4)
 
     # Save camera poses
     npy_path, npz_path = save_camera_poses(out_dir, T_world_to_cam_arr)

@@ -307,3 +307,69 @@ def compute_osc_actions(
         [delta_p, delta_rotvec, gripper_action[:, np.newaxis]], axis=1
     )
     return actions
+
+
+def adapt_camera_intrinsics(
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    orig_w: int,
+    orig_h: int,
+    target_w: int,
+    target_h: int,
+) -> tuple[float, float, float, float]:
+    """Adapt camera intrinsics across resolutions and orientations (portrait vs. widescreen).
+
+    Handles orientation changes (e.g. calibration performed on landscape/widescreen images
+    while demo video was recorded in portrait mode, or vice versa). When orientations differ,
+    the optical sensor axes are rotated 90 degrees:
+    - Long axis of calibration sensor maps to long axis of target video.
+    - Short axis of calibration sensor maps to short axis of target video.
+    - Focal lengths swap axes (fx <-> fy) so pixels remain square and distortion is prevented.
+    - Optical centers are mapped accurately without artificial aspect ratio stretching.
+
+    Args:
+        fx, fy: Focal lengths in calibration image pixels.
+        cx, cy: Principal point in calibration image pixels.
+        orig_w, orig_h: Calibration image width and height.
+        target_w, target_h: Current video frame width and height.
+
+    Returns:
+        Tuple of (new_fx, new_fy, new_cx, new_cy).
+    """
+    if orig_w <= 0 or orig_h <= 0 or target_w <= 0 or target_h <= 0:
+        return float(fx), float(fy), float(cx), float(cy)
+
+    orig_is_portrait = (orig_w < orig_h)
+    target_is_portrait = (target_w < target_h)
+
+    if orig_is_portrait == target_is_portrait:
+        # Same orientation (e.g. landscape -> landscape or portrait -> portrait)
+        sx = target_w / float(orig_w)
+        sy = target_h / float(orig_h)
+        new_fx = fx * sx
+        new_fy = fy * sy
+        new_cx = cx * sx
+        new_cy = cy * sy
+    else:
+        # Flipped orientation: 90-degree sensor rotation between calibration and video!
+        if target_is_portrait:
+            # Video is portrait (target_w < target_h), calibration was landscape (orig_w > orig_h)
+            s_short = target_w / float(orig_h)  # short axis scale
+            s_long = target_h / float(orig_w)   # long axis scale
+            new_fx = fy * s_short
+            new_fy = fx * s_long
+            new_cx = target_w / 2.0
+            new_cy = target_h / 2.0
+        else:
+            # Video is landscape (target_w > target_h), calibration was portrait (orig_w < orig_h)
+            s_long = target_w / float(orig_h)
+            s_short = target_h / float(orig_w)
+            new_fx = fy * s_long
+            new_fy = fx * s_short
+            new_cx = target_w / 2.0
+            new_cy = target_h / 2.0
+
+    return float(new_fx), float(new_fy), float(new_cx), float(new_cy)
+

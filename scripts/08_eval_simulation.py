@@ -51,45 +51,27 @@ def replay_simulation(
 
     logger.info("Loaded demo '%s' with %d steps for simulation replay in '%s'...", demo_name, len(actions), env_name)
 
-    import robosuite as suite
-    from robosuite.controllers import load_controller_config
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from src.retargeting.sim_replay import execute_panda_manipulation_in_sim
 
-    controller_cfg = load_controller_config(default_controller="OSC_POSE")
-
-    env = suite.make(
+    logger.info("Executing %d closed-loop object-aligned control steps on Franka Panda...", len(actions))
+    sim_result = execute_panda_manipulation_in_sim(
+        actions=actions,
+        demo_eef_pos=real_eef_pos,
         env_name=env_name,
-        robots="Panda",
-        controller_configs=controller_cfg,
-        has_renderer=False,
-        has_offscreen_renderer=render_video,
-        use_camera_obs=render_video,
-        camera_names=["agentview", "robot0_eye_in_hand"] if render_video else None,
-        camera_heights=256,
-        camera_widths=256,
-        control_freq=20,
+        render_video=render_video,
+        camera_height=256,
+        camera_width=256,
     )
 
-    obs = env.reset()
-    sim_eef_positions = []
-    recorded_frames = []
-
-    logger.info("Executing %d control steps on Franka Panda in MuJoCo...", len(actions))
-    for i, action in enumerate(actions):
-        sim_pos = obs.get("robot0_eef_pos", np.zeros(3))
-        sim_eef_positions.append(sim_pos)
-
-        if render_video and "agentview_image" in obs:
-            frame = obs["agentview_image"]
-            # Robosuite renders upside down by default
-            frame = np.flipud(frame)
-            recorded_frames.append(frame)
-
-        obs, reward, done, info = env.step(action)
-
-    env.close()
-
-    sim_eef_positions = np.array(sim_eef_positions)
-    logger.info("Simulation replay completed successfully (%d frames recorded).", len(sim_eef_positions))
+    recorded_frames = sim_result.agentview_frames
+    logger.info(
+        "Simulation replay completed (%d steps) | Object Grasped: %s | Task Lift Success: %s | Max Cube Lift: %.1f cm",
+        len(sim_result.ee_pos),
+        sim_result.grasped,
+        sim_result.task_success,
+        sim_result.max_cube_lift_m * 100.0,
+    )
 
     # Save video / GIF
     if recorded_frames:
@@ -103,9 +85,7 @@ def replay_simulation(
             imageio.mimsave(str(gif_path), recorded_frames[::2], fps=10)
             logger.info("Saved offscreen simulation replay GIF: %s", gif_path)
 
-    # Compute path displacement summary
-    total_distance_traveled = np.sum(np.linalg.norm(np.diff(sim_eef_positions, axis=0), axis=-1))
-    logger.info("Panda EEF Trajectory Distance Traveled in Sim: %.3f meters", total_distance_traveled)
+    logger.info("Panda EEF Trajectory Distance Traveled in Sim: %.3f meters", sim_result.total_eef_distance_m)
 
 
 def main() -> int:

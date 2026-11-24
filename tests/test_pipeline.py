@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from src.utils.coordinates import (
+    adapt_camera_intrinsics,
     compute_osc_actions,
     compute_table_alignment,
     compose_hand_to_table,
@@ -121,6 +122,41 @@ class TestCoordinatesMath(unittest.TestCase):
         # aperture 1.0 -> -1.0 (open)
         self.assertAlmostEqual(actions[0, 6], 1.0, places=5)
         self.assertAlmostEqual(actions[1, 6], -1.0, places=5)
+
+    def test_adapt_camera_intrinsics_portrait(self) -> None:
+        # Landscape 4000x2252 calibration
+        orig_w, orig_h = 4000, 2252
+        fx, fy = 3080.0, 3178.0
+        cx, cy = 1717.0, 1781.0
+
+        # Video is portrait 1080x1920
+        new_fx, new_fy, new_cx, new_cy = adapt_camera_intrinsics(
+            fx, fy, cx, cy, orig_w, orig_h, 1080, 1920
+        )
+
+        # In portrait: focal lengths should be swapped and scaled to maintain square pixels
+        # new_fx corresponds to sensor short side (target_w / orig_h = 1080/2252)
+        # new_fy corresponds to sensor long side (target_h / orig_w = 1920/4000)
+        self.assertAlmostEqual(new_fx, fy * (1080 / 2252), places=1)
+        self.assertAlmostEqual(new_fy, fx * (1920 / 4000), places=1)
+        # Square pixel ratio should be preserved (~1.0)
+        ratio = new_fx / new_fy
+        self.assertTrue(0.95 < ratio < 1.08, f"Pixel aspect ratio distorted: {ratio}")
+        self.assertEqual(new_cx, 540.0)
+        self.assertEqual(new_cy, 960.0)
+
+    def test_adapt_camera_intrinsics_same_orientation(self) -> None:
+        orig_w, orig_h = 4000, 2252
+        fx, fy = 3000.0, 3000.0
+        cx, cy = 2000.0, 1126.0
+
+        # Target is widescreen 1920x1080
+        new_fx, new_fy, new_cx, new_cy = adapt_camera_intrinsics(
+            fx, fy, cx, cy, orig_w, orig_h, 1920, 1080
+        )
+        self.assertAlmostEqual(new_fx, fx * (1920 / 4000), places=2)
+        self.assertAlmostEqual(new_fy, fy * (1080 / 2252), places=2)
+
 
 
 class TestIOMisc(unittest.TestCase):
@@ -259,6 +295,45 @@ class TestEndToEndPipeline(unittest.TestCase):
                 self.assertEqual(obs["robot0_eef_quat"].shape, (n_samples, 4))
                 self.assertEqual(obs["agentview_rgb"].shape, (n_samples, 84, 84, 3))
                 self.assertEqual(obs["robot0_eye_in_hand_rgb"].shape, (n_samples, 84, 84, 3))
+
+    def test_simulation_grasping_and_lifting(self) -> None:
+        from src.retargeting.sim_replay import (
+            PANDA_INIT_QPOS,
+            execute_panda_manipulation_in_sim,
+            panda_forward_kinematics,
+        )
+
+        # Verify forward kinematics at home configuration matches Robosuite Lift reset pose
+        links, eef_pos, _ = panda_forward_kinematics(PANDA_INIT_QPOS)
+        self.assertIn("robot0_link0", links)
+        self.assertIn("robot0_right_hand", links)
+        self.assertTrue(0.95 < eef_pos[2] < 1.10)
+
+        # Synthesize a 60-step pick-lift-place trajectory
+        N = 60
+        demo_eef = np.zeros((N, 3), dtype=np.float32)
+        demo_eef[:, 0] = np.linspace(0.28, 0.50, N)
+        demo_eef[:, 1] = np.linspace(-0.10, 0.10, N)
+        demo_eef[:, 2] = -0.13 + 0.12 * np.sin(np.linspace(0, np.pi, N))
+
+        actions = np.zeros((N, 7), dtype=np.float32)
+        actions[:-1, :3] = np.diff(demo_eef, axis=0)
+        actions[:, 6] = -1.0
+        actions[15:45, 6] = 1.0  # Pinch/grasp between step 15 and 45
+
+        res = execute_panda_manipulation_in_sim(
+            actions=actions,
+            demo_eef_pos=demo_eef,
+            env_name="Lift",
+            render_video=True,
+            camera_height=128,
+            camera_width=128,
+        )
+        self.assertTrue(res.grasped, "Panda arm should grasp the object during the pinch phase")
+        self.assertTrue(res.task_success, "Panda arm should lift the grasped cube > 4 cm above the table")
+        self.assertGreater(res.max_cube_lift_m, 0.08)
+        self.assertGreater(res.total_eef_distance_m, 0.35)
+        self.assertEqual(len(res.agentview_frames), N)
 
 
 if __name__ == "__main__":

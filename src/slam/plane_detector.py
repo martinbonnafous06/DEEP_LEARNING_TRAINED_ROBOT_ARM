@@ -13,7 +13,7 @@ try:
 except ImportError:
     o3d = None
 
-from ..utils.coordinates import compute_table_alignment
+from ..utils.coordinates import adapt_camera_intrinsics, compute_table_alignment
 from ..utils.io import load_calibration_txt, load_camera_poses, save_camera_poses
 
 logger = logging.getLogger("slam")
@@ -91,6 +91,11 @@ def build_scene_point_cloud(
     depth_files = sorted(slam_p.glob("depth_*.npy"))
     if depth_files:
         logger.info("Back-projecting %d depth maps ...", len(depth_files))
+        first_depth = np.load(depth_files[0])
+        h_d, w_d = first_depth.shape[:2]
+        if w_d > 0 and (cx > w_d or cy > h_d):
+            fx, fy, cx, cy = adapt_camera_intrinsics(fx, fy, cx, cy, 4000, 2252, w_d, h_d)
+            logger.info("Adapted calibration to depth maps %dx%d: fx=%.1f, fy=%.1f", w_d, h_d, fx, fy)
         all_pts: list[npt.NDArray[np.float64]] = []
 
         for i, dpath in enumerate(depth_files):

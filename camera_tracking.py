@@ -314,6 +314,12 @@ def build_point_cloud(
     depth_files = sorted(output_dir.glob("depth_*.npy"))
     if depth_files:
         _LOG.info("Back-projecting %d depth maps ...", len(depth_files))
+        first_depth = np.load(depth_files[0])
+        h_d, w_d = first_depth.shape[:2]
+        if w_d > 0 and (cx > w_d or cy > h_d):
+            from src.utils.coordinates import adapt_camera_intrinsics
+            fx, fy, cx, cy = adapt_camera_intrinsics(fx, fy, cx, cy, 4000, 2252, w_d, h_d)
+            _LOG.info("Adapted calibration to depth maps %dx%d: fx=%.1f, fy=%.1f", w_d, h_d, fx, fy)
         all_pts: list[npt.NDArray[np.float64]] = []
 
         for i, dpath in enumerate(depth_files):

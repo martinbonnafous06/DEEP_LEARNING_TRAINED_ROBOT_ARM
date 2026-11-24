@@ -133,78 +133,26 @@ def _load_frames(
 def _try_robosuite_replay(
     actions: np.ndarray,
     env_name: str,
+    ee_pos: Optional[np.ndarray] = None,
 ) -> Optional[dict[str, np.ndarray]]:
-    """Replay *actions* in a Robosuite environment and collect observations.
-
-    Attempts to import ``robosuite`` at runtime.  If the import fails the
-    function prints a warning and returns ``None`` so the rest of the pipeline
-    continues without simulation data.
-
-    Args:
-        actions: Array of shape ``(N, 7)`` -- the end-effector actions to
-            replay in the environment.
-        env_name: Robosuite environment name (e.g. ``"Lift"``).
-
-    Returns:
-        A dict with keys ``"joint_states"``, ``"ee_pos"``, ``"ee_ori"`` each
-        mapping to a ``numpy.ndarray`` of shape ``(N, ...)``, or ``None`` if
-        Robosuite is unavailable or replay fails.
-    """
-    import importlib.util
-    if importlib.util.find_spec("robosuite") is None:
-        print(
-            "[dataset_exporter] INFO: robosuite not installed -- "
-            "skipping environment replay."
-        )
-        return None
-
+    """Replay *actions* in a Robosuite/Panda environment and collect observations."""
     try:
-        import robosuite as suite  # type: ignore
-        env = suite.make(
+        from src.retargeting.sim_replay import execute_panda_manipulation_in_sim
+
+        res = execute_panda_manipulation_in_sim(
+            actions=actions,
+            demo_eef_pos=ee_pos,
             env_name=env_name,
-            robots="Panda",
-            has_renderer=False,
-            has_offscreen_renderer=False,
-            use_camera_obs=False,
-            control_freq=20,
+            render_video=False,
         )
-        obs = env.reset()
-
-        n = len(actions)
-        joint_states: list[np.ndarray] = []
-        ee_positions: list[np.ndarray] = []
-        ee_oris: list[np.ndarray] = []
-
-        for i, action in enumerate(actions):
-            # Record observation before stepping action i
-            joint_states.append(
-                obs.get("robot0_joint_pos", np.zeros(7, dtype=np.float32))
-            )
-            ee_positions.append(
-                obs.get("robot0_eef_pos", np.zeros(3, dtype=np.float32))
-            )
-            ee_oris.append(
-                obs.get("robot0_eef_quat", np.zeros(4, dtype=np.float32))
-            )
-            obs, _reward, done, _info = env.step(action)
-            if done and i < n - 1:
-                print(f"[dataset_exporter] Environment terminated at step {i} / {n}.")
-                for _ in range(i + 1, n):
-                    joint_states.append(joint_states[-1])
-                    ee_positions.append(ee_positions[-1])
-                    ee_oris.append(ee_oris[-1])
-                break
-
-        env.close()
         return {
-            "joint_states": np.array(joint_states, dtype=np.float32),
-            "ee_pos":       np.array(ee_positions, dtype=np.float32),
-            "ee_ori":       np.array(ee_oris, dtype=np.float32),
+            "joint_states": res.joint_states,
+            "ee_pos":       res.ee_pos,
+            "ee_ori":       res.ee_ori,
         }
-
     except Exception as exc:  # pylint: disable=broad-except
         print(
-            f"[dataset_exporter] WARNING: Robosuite replay failed ({exc}); "
+            f"[dataset_exporter] WARNING: Simulation replay failed ({exc}); "
             "skipping."
         )
         return None
@@ -477,7 +425,7 @@ def export_dataset(
     # 2. Optional Robosuite replay
     # ------------------------------------------------------------------
     sim_obs: Optional[dict[str, np.ndarray]] = _try_robosuite_replay(
-        actions, env_name
+        actions, env_name, ee_pos=ee_pos
     )
 
     # ------------------------------------------------------------------
