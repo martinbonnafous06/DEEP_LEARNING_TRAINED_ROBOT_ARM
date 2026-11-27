@@ -217,7 +217,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render robot arm skeleton overlay on video frames.")
     parser.add_argument("--demo_id", type=str, default="demo_0000", help="Demo identifier, e.g. demo_0000")
     parser.add_argument("--env_name", type=str, default="Lift", help="Robosuite environment name")
-    parser.add_argument("--output_dir", type=str, default="outputs/robot_arm_skeleton_overlay", help="Output directory")
+    parser.add_argument("--output_dir", type=str, default="experiments/skeleton_overlays", help="Output directory")
     args = parser.parse_args()
 
     demo_id = args.demo_id

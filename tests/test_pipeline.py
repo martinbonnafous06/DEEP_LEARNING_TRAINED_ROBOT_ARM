@@ -335,6 +335,133 @@ class TestEndToEndPipeline(unittest.TestCase):
         self.assertGreater(res.total_eef_distance_m, 0.35)
         self.assertEqual(len(res.agentview_frames), N)
 
+    def test_multi_dataset_and_lazy_hdf5_policy_and_world_model(self) -> None:
+        """Verify schema auto-discovery, lazy HDF5 streaming, and multi-dataset BC + WM training."""
+        import importlib
+        import h5py
+        import torch
+
+        mod_bc = importlib.import_module("scripts.06_train_policy")
+        mod_wm = importlib.import_module("scripts.07_eval_world_model")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            custom_h5 = tmp / "custom_robomimic_dataset.hdf5"
+
+            # Synthesize a non-standard Robomimic-style dataset:
+            # - demo keys named 'ep_001' .. 'ep_003' with varying lengths (15, 22, 18)
+            # - RGB stored under 'obs/agentview_image' at 84x84 resolution
+            # - Proprioception stored under 'obs/ee_pos' (3D) + 'obs/ee_ori' (5D) = 8D total
+            # - Actions normalized in [-1, 1] with 6D motion + [0, 1] gripper = 7D total
+            with h5py.File(custom_h5, "w") as f:
+                data_grp = f.create_group("data")
+                for idx, ep_len in enumerate([15, 22, 18], start=1):
+                    ep = data_grp.create_group(f"ep_{idx:03d}")
+                    obs = ep.create_group("obs")
+                    obs.create_dataset(
+                        "agentview_image",
+                        data=np.random.randint(0, 256, size=(ep_len, 84, 84, 3), dtype=np.uint8),
+                    )
+                    obs.create_dataset(
+                        "ee_pos",
+                        data=np.random.randn(ep_len, 3).astype(np.float32) * 0.2,
+                    )
+                    obs.create_dataset(
+                        "ee_ori",
+                        data=np.random.randn(ep_len, 5).astype(np.float32),
+                    )
+                    acts = np.random.uniform(-0.8, 0.8, size=(ep_len, 7)).astype(np.float32)
+                    acts[:, 6] = np.where(np.arange(ep_len) > ep_len // 2, 1.0, 0.0)
+                    ep.create_dataset("actions", data=acts)
+
+            # 1. Test universal schema discovery
+            schema = mod_bc.resolve_hdf5_schema(custom_h5)
+            self.assertEqual(schema.rgb_key, "agentview_image")
+            self.assertEqual(schema.image_shape, (3, 84, 84))
+            self.assertEqual(schema.proprio_dim, 8)
+            self.assertEqual(schema.action_dim, 7)
+            self.assertEqual(schema.total_frames, 55)
+            self.assertAlmostEqual(schema.grip_min, 0.0, places=4)
+            self.assertAlmostEqual(schema.grip_max, 1.0, places=4)
+
+            # 2. Test both RAM-cached uint8 and Lazy HDF5 Dataset modes
+            ds_ram = mod_bc.LiberoHumanoidDataset(custom_h5, schema.demo_keys, schema=schema, lazy_hdf5=False)
+            ds_lazy = mod_bc.LiberoHumanoidDataset(custom_h5, schema.demo_keys, schema=schema, lazy_hdf5=True)
+            self.assertEqual(len(ds_ram), 55)
+            self.assertEqual(len(ds_lazy), 55)
+            self.assertEqual(ds_ram[0]["rgb"].dtype, torch.uint8)
+            np.testing.assert_array_equal(ds_ram[10]["rgb"].numpy(), ds_lazy[10]["rgb"].numpy())
+            if ds_lazy._h5_file is not None:
+                ds_lazy._h5_file.close()
+
+            # 3. Test dataset-adaptive BCPolicy forward pass on 84x84 images and 8D proprioception
+            policy = mod_bc.BCPolicy(proprio_dim=schema.proprio_dim, action_dim=schema.action_dim)
+            policy.set_dataset_statistics(schema)
+            sample_rgb = ds_ram[0]["rgb"].unsqueeze(0)
+            sample_prop = ds_ram[0]["proprio"].unsqueeze(0)
+            pred_act = policy(sample_rgb, sample_prop)
+            self.assertEqual(pred_act.shape, (1, 7))
+            self.assertTrue(0.0 <= float(pred_act[0, 6]) <= 1.0)
+
+            # 4. Test vectorized multi-trajectory World Model training on variable-length 8D state trajectories
+            trajs = mod_wm.load_trajectories(custom_h5)
+            self.assertEqual(len(trajs), 3)
+            wm = mod_wm.train_world_model(
+                trajectories=trajs,
+                train_keys=list(trajs.keys()),
+                epochs=2,
+                device=torch.device("cpu"),
+                traj_batch_size=2,
+            )
+            self.assertEqual(wm.state_dim, 8)
+
+            # 5. Test non-destructive Per-Dataset Model Registry & Continual Fine-Tuning (Resume)
+            ckpt_dir = tmp / "checkpoints"
+            milestones_a = []
+            mod_bc.train_policy(
+                dataset_path=custom_h5,
+                output_dir=ckpt_dir,
+                epochs=2,
+                batch_size=16,
+                device_name="cpu",
+                log_interval=1,
+                epoch_callback=lambda info: milestones_a.append(info["epoch"]),
+                model_name="dataset_alpha",
+                update_active_default=True,
+            )
+            alpha_ckpt = ckpt_dir / "registry" / "dataset_alpha" / "best_policy.pt"
+            self.assertTrue(alpha_ckpt.is_file())
+            self.assertEqual(milestones_a, [1, 2])
+
+            # Train a second dataset model profile ("dataset_beta") fine-tuning from "dataset_alpha"
+            mod_bc.train_policy(
+                dataset_path=custom_h5,
+                output_dir=ckpt_dir,
+                epochs=2,
+                batch_size=16,
+                device_name="cpu",
+                log_interval=2,
+                model_name="dataset_beta",
+                resume_from=alpha_ckpt,
+                update_active_default=True,
+            )
+            beta_ckpt = ckpt_dir / "registry" / "dataset_beta" / "best_policy.pt"
+            self.assertTrue(alpha_ckpt.is_file(), "dataset_alpha checkpoint must NOT be destroyed when training dataset_beta")
+            self.assertTrue(beta_ckpt.is_file(), "dataset_beta checkpoint must be created in its own registry folder")
+
+            # Re-training dataset_alpha must automatically version the previous checkpoint as best_policy_v1.pt
+            mod_bc.train_policy(
+                dataset_path=custom_h5,
+                output_dir=ckpt_dir,
+                epochs=1,
+                batch_size=16,
+                device_name="cpu",
+                model_name="dataset_alpha",
+                resume_from=alpha_ckpt,
+                update_active_default=False,
+            )
+            self.assertTrue((ckpt_dir / "registry" / "dataset_alpha" / "best_policy_v1.pt").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

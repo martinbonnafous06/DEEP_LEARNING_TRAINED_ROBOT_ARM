@@ -1,0 +1,28 @@
+{
+  "demo_libero": {
+    "model_name": "demo_libero",
+    "checkpoint_path": "C:\\Users\\marti\\Desktop\\Humanoid\\experiments\\checkpoints\\registry\\demo_libero\\best_policy.pt",
+    "metrics_path": "C:\\Users\\marti\\Desktop\\Humanoid\\experiments\\checkpoints\\registry\\demo_libero\\policy_metrics.json",
+    "dataset_path": "C:\\Users\\marti\\Desktop\\Humanoid\\data\\datasets\\demo_libero.hdf5",
+    "updated_at": "2026-11-27 21:32:14",
+    "resumed_from": null,
+    "val_pos_mae_mm": 2.802,
+    "rollout_ade_cm": 0.342,
+    "rollout_fde_cm": 0.548,
+    "val_grip_acc_pct": 96.75,
+    "versions_count": 2
+  },
+  "raw_2": {
+    "model_name": "raw_2",
+    "checkpoint_path": "C:\\Users\\marti\\Desktop\\Humanoid\\experiments\\checkpoints\\registry\\raw_2\\best_policy.pt",
+    "metrics_path": "C:\\Users\\marti\\Desktop\\Humanoid\\experiments\\checkpoints\\registry\\raw_2\\policy_metrics.json",
+    "dataset_path": "C:\\Users\\marti\\Desktop\\Humanoid\\data\\datasets\\raw_2.hdf5",
+    "updated_at": "2026-11-25 18:18:52",
+    "resumed_from": null,
+    "val_pos_mae_mm": 11.978,
+    "rollout_ade_cm": 0.226,
+    "rollout_fde_cm": 0.26,
+    "val_grip_acc_pct": 99.11,
+    "versions_count": 1
+  }
+}

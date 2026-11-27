@@ -41,7 +41,7 @@ def generate_aruco_marker_image(
 def create_printable_tag_sheet(
     marker_id: int = 0,
     size_mm: float = 50.0,
-    output_path: str = "data/aruco_tag_0.png",
+    output_path: str = "data/calibration/targets/aruco_tag_0_original.png",
 ) -> Path:
     """Create a formatted printable sheet with target dimensions and ruler check."""
     tag_img = generate_aruco_marker_image(marker_id=marker_id, pixel_size=1200)
@@ -82,7 +82,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generate printable ArUco Tag ID 0 (Original Format).")
     parser.add_argument("--marker_id", type=int, default=0, help="ArUco marker ID (default: 0).")
     parser.add_argument("--size_mm", type=float, default=50.0, help="Physical side length in millimetres (e.g. 50 or 80).")
-    parser.add_argument("--output", type=str, default="data/aruco_tag_0_original.png", help="Output path for printable sheet.")
+    parser.add_argument("--output", type=str, default="data/calibration/targets/aruco_tag_0_original.png", help="Output path for printable sheet.")
     args = parser.parse_args()
 
     out_file = create_printable_tag_sheet(marker_id=args.marker_id, size_mm=args.size_mm, output_path=args.output)

@@ -21,7 +21,7 @@ global:
 
 # ------------------------------------------------------------------------------
 # Stage 1: Camera Intrinsic Calibration
-# Script: calibration.py
+# Script: scripts/01_calibrate.py (Targets: scripts/generate_checkerboard_pdf.py)
 # ------------------------------------------------------------------------------
 calibration:
   # Chessboard geometry
@@ -54,8 +54,8 @@ calibration:
 
   # Input / Output File Paths
   io:
-    image_dir: "data/calibration"    # Directory containing calibration images
-    output_dir: "outputs/calibration"
+    image_dir: "data/calib_images"   # Directory containing calibration images
+    output_dir: "data/calibration"
     formats:
       - "txt"                        # DROID-SLAM calib.txt format: "fx fy cx cy"
       - "npz"                        # Compressed numpy archive (K, dist, rvecs, tvecs, rms)
@@ -67,7 +67,7 @@ calibration:
 
 # ------------------------------------------------------------------------------
 # Stage 2: Visual SLAM & Table Plane Extraction
-# Script: camera_tracking.py
+# Script: scripts/02_track_camera.py (Targets: scripts/generate_aruco_tag.py)
 # ------------------------------------------------------------------------------
 slam:
   # Video Frame Preprocessing
@@ -119,8 +119,8 @@ slam:
 
   # Input / Output Settings
   io:
-    calib_txt: "outputs/calibration/calib.txt"
-    output_dir: "outputs/camera_tracking"
+    calib_txt: "data/calibration/calib.txt"
+    output_dir: "data/slam"
     poses_filename: "poses.npy"
     camera_poses_npz: "camera_poses.npz"
     table_transform_npz: "table_transform.npz"
@@ -129,7 +129,7 @@ slam:
 
 # ------------------------------------------------------------------------------
 # Stage 3: 3D Hand Pose & Gripper State Estimation
-# Script: hand_tracking.py
+# Script: scripts/03_track_hands.py
 # ------------------------------------------------------------------------------
 hand_tracking:
   # HaMeR Subprocess Configuration
@@ -178,12 +178,12 @@ hand_tracking:
   # Input / Output Settings
   io:
     frames_dir: "data/frames"
-    output_dir: "outputs/hand_tracking"
+    output_dir: "data/hand_poses"
     output_npz: "hand_poses.npz"
 
 # ------------------------------------------------------------------------------
 # Stage 4: Kinematics Retargeting & Trajectory Filtering
-# Script: kinematics_retargeting.py
+# Script: scripts/04_retarget_kinematics.py
 # ------------------------------------------------------------------------------
 retargeting:
   # Robot Base to Table Coordinate Setup
@@ -232,15 +232,15 @@ retargeting:
 
   # Input / Output Settings
   io:
-    camera_poses_npz: "outputs/camera_tracking/camera_poses.npz"
-    table_transform_npz: "outputs/camera_tracking/table_transform.npz"
-    hand_poses_npz: "outputs/hand_tracking/hand_poses.npz"
-    output_dir: "outputs/retargeting"
+    camera_poses_npz: "data/slam/demo_0000/camera_poses.npz"
+    table_transform_npz: "data/slam/demo_0000/table_transform.npz"
+    hand_poses_npz: "data/hand_poses/demo_0000/hand_poses.npz"
+    output_dir: "data/retargeted"
     output_npz: "retargeted.npz"
 
 # ------------------------------------------------------------------------------
 # Stage 5: Dataset Export to LIBERO Benchmark
-# Script: dataset_exporter.py
+# Script: scripts/05_export_libero.py
 # ------------------------------------------------------------------------------
 dataset_export:
   # LIBERO / Robosuite Target Environment
@@ -295,5 +295,5 @@ dataset_export:
 
   # Input / Output Settings
   io:
-    retargeted_npz: "outputs/retargeting/retargeted.npz"
-    output_hdf5: "outputs/datasets/libero_dataset.hdf5"
+    retargeted_npz: "data/retargeted/demo_0000/retargeted.npz"
+    output_hdf5: "data/datasets/demo_libero.hdf5"

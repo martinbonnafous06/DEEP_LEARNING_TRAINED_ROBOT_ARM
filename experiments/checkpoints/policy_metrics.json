@@ -1,0 +1,27 @@
+{
+  "model_name": "demo_libero",
+  "resumed_from": null,
+  "best_motion_epoch": 78,
+  "best_gripper_epoch": 79,
+  "training_time_sec": 585.87,
+  "throughput_epochs_per_sec": 0.137,
+  "val_pos_mae_m": 0.002802,
+  "val_pos_mae_mm": 2.802,
+  "rollout_ade_cm": 0.342,
+  "rollout_fde_cm": 0.548,
+  "val_grip_acc_pct": 96.75,
+  "val_motion_loss_cm": 0.32195,
+  "val_gripper_loss": 0.28866,
+  "dataset_schema": {
+    "n_demos": 18,
+    "total_frames": 1302,
+    "rgb_key": "agentview_rgb",
+    "image_shape": [
+      3,
+      128,
+      128
+    ],
+    "proprio_dim": 7,
+    "action_dim": 7
+  }
+}

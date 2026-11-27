@@ -82,10 +82,16 @@ def run_pipeline_for_demo(
     logger.info(">>> Processing [%d]: '%s' -> '%s'", demo_idx, demo_folder_name, demo_h5_name)
     logger.info("==================================================================")
 
-    # Dedicated per-demo intermediate directories
-    slam_dir = base_data_dir / "slam" / demo_folder_name
-    hand_dir = base_data_dir / "hand_poses" / demo_folder_name
-    retarget_dir = base_data_dir / "retargeted" / demo_folder_name
+    # Dedicated per-demo intermediate directories (namespaced by dataset subfolder when present, e.g. data/frames/raw_2/demo_0000)
+    dataset_subtag = demo_dir.parent.name if demo_dir.parent.name != "frames" else ""
+    if dataset_subtag:
+        slam_dir = base_data_dir / "slam" / dataset_subtag / demo_folder_name
+        hand_dir = base_data_dir / "hand_poses" / dataset_subtag / demo_folder_name
+        retarget_dir = base_data_dir / "retargeted" / dataset_subtag / demo_folder_name
+    else:
+        slam_dir = base_data_dir / "slam" / demo_folder_name
+        hand_dir = base_data_dir / "hand_poses" / demo_folder_name
+        retarget_dir = base_data_dir / "retargeted" / demo_folder_name
 
     start_t = time.time()
 
@@ -260,7 +266,12 @@ def main() -> int:
     if args.video_dir is not None:
         v_dir = Path(args.video_dir).resolve()
         if v_dir.is_dir():
-            logger.info("=== Stage 0: Batch extracting videos from '%s' ===", v_dir)
+            # Automatically route extracted frames into a dedicated dataset subfolder (e.g. data/frames/raw_2)
+            if args.frames_root == "data/frames" and v_dir.name.lower() != "raw_videos":
+                frames_root = (project_root / "data" / "frames" / v_dir.name).resolve()
+            if args.output_hdf5 == "data/datasets/demo_libero.hdf5" and v_dir.name.lower() != "raw_videos":
+                output_hdf5 = (project_root / "data" / "datasets" / f"{v_dir.name}.hdf5").resolve()
+            logger.info("=== Stage 0: Batch extracting videos from '%s' -> '%s' ===", v_dir, frames_root)
             batch_transform_videos_to_frames(
                 video_sources=v_dir,
                 output_root=frames_root,

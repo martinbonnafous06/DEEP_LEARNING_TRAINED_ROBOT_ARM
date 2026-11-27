@@ -267,7 +267,7 @@ def generate_fig1_pipeline_overview() -> Path:
         (0.349, 0.30, 0.142, 0.55, "STAGE 3", "3D Hand Pose &\nPinch Detector", "21 3D Hand Joints (m)\n8.5 cm Bone Scaling\nPinch d < 4 cm -> Grasp", "#fef9e7", "#b7950b"),
         (0.516, 0.30, 0.142, 0.55, "STAGE 4", "SE(3) Kinematics\nRetargeting", "Thumb-Index -> Panda EEF\n+14 cm Obstacle Arch\nSpline + Savitzky-Golay", "#fdf2e9", "#d35400"),
         (0.683, 0.30, 0.142, 0.55, "STAGE 5", "3D Panda MuJoCo\n& LIBERO HDF5", "Closed-Loop Grasp Sim\nFull 3D Panda XML Meshes\n100% Lift (15.8 cm)", "#f4ecf7", "#7d3c98"),
-        (0.850, 0.30, 0.135, 0.55, "STAGE 6", "World Model &\nBC Visuomotor", "Residual-GRU World Model\n(0.06 cm 3D Error)\nResNet-18 Policy (7.4 mm)", "#fdedec", "#c0392b"),
+        (0.850, 0.30, 0.135, 0.55, "STAGE 6", "World Model &\nBC Visuomotor", "Residual-GRU World Model\n(0.06 cm 3D Error)\nDual-Head Policy (0.58 mm)", "#fdedec", "#c0392b"),
     ]
     for x, y, w, h, tag, title, body, fc, ec in nodes:
         _draw_node(ax, x, y, w, h, tag, title, body, fc, ec)
@@ -303,7 +303,7 @@ def generate_fig1_pipeline_overview() -> Path:
     raw_frames_d0 = sorted((ROOT / "data/frames/demo_0000").glob("*.png"))
     raw_f30_path = raw_frames_d0[min(30, len(raw_frames_d0) - 1)] if raw_frames_d0 else (ROOT / "data/frames/demo_0000/frame_000030.png")
     img_raw = _load_rgb(raw_f30_path, crop_box=(0.22, 0.85, 0.0, 0.92))
-    img_overlay = _load_rgb(ROOT / "outputs/robot_arm_skeleton_overlay/demo_0000/overlay_frame_0030.jpg", crop_box=(0.0, 0.86, 0.0, 0.95))
+    img_overlay = _load_rgb(ROOT / "experiments/skeleton_overlays/demo_0000/overlay_frame_0030.jpg", crop_box=(0.0, 0.86, 0.0, 0.95))
     img_sim = _load_rgb(ROOT / "experiments/world_model/comparison_frames/demo_0000_video_vs_wm_0045.jpg", crop_box=(0.0, 0.333, 0.643, 1.0))
     img_gui = _load_rgb(ROOT / "experiments/world_model/interactive_gui_preview.png")
     if img_gui.shape[0] == 300 and img_gui.shape[1] == 300:
@@ -445,20 +445,23 @@ def generate_fig3_neural_architectures() -> Path:
     # Bottom Box: Visuomotor BC Policy
     bot_bg = FancyBboxPatch((0.01, 0.02), 0.98, 0.46, boxstyle="round,pad=0.01,rounding_size=0.018", facecolor="#fcfaff", edgecolor="#7d3c98", linewidth=1.8)
     ax.add_patch(bot_bg)
-    ax.text(0.5, 0.435, "B. VISUOMOTOR BEHAVIORAL CLONING POLICY (Predicts Next 7-DoF Robot Action from Camera Image + Robot Pose)", ha="center", va="center", fontsize=11.2, fontweight="bold", color="#4a235a")
+    ax.text(0.5, 0.435, "B. ENHANCED DUAL-HEAD DECODED VISUOMOTOR BC POLICY (2D Spatial Softmax + Fourier Proprioception + Residual MLP)", ha="center", va="center", fontsize=11.0, fontweight="bold", color="#4a235a")
 
-    _draw_node(ax, 0.03, 0.23, 0.18, 0.17, "CAMERA INPUT", "RGB Image (128x128)", "Live Tabletop Camera\nNormalized RGB Pixels", "#f4ecf7", "#7d3c98", title_size=8.3, body_size=7.0)
+    _draw_node(ax, 0.03, 0.23, 0.18, 0.17, "CAMERA INPUT", "RGB Image (128x128)", "Live Tabletop Camera\n[0, 1] Normalized RGB", "#f4ecf7", "#7d3c98", title_size=8.3, body_size=7.0)
     _draw_node(ax, 0.03, 0.04, 0.18, 0.17, "ROBOT POSE", "7-D Proprioception", "Current EEF [x, y, z]\n+ Quaternion [qx,qy,qz,qw]", "#ebf5fb", "#1f64a6", title_size=8.3, body_size=7.0)
-    _draw_node(ax, 0.25, 0.23, 0.20, 0.17, "VISION BACKBONE", "ResNet-18 CNN", "Deep Spatial Features\n512-D Visual Vector e_vis", "#f4ecf7", "#7d3c98", title_size=8.3, body_size=7.0)
-    _draw_node(ax, 0.25, 0.04, 0.20, 0.17, "STATE MLP", "2-Layer ReLU MLP", "Linear(7 -> 64 -> 64)\n64-D State Vector e_prop", "#ebf5fb", "#1f64a6", title_size=8.3, body_size=7.0)
-    _draw_node(ax, 0.49, 0.11, 0.22, 0.24, "MULTIMODAL FUSION", "Concat [512 + 64 = 576-D]", "Linear(576 -> 256) + ReLU\nDropout(0.1) + Linear(256 -> 128)", "#fef9e7", "#b7950b", title_size=8.5, body_size=7.2)
-    _draw_node(ax, 0.75, 0.11, 0.22, 0.24, "ACTION OUTPUT", "7-DoF Robot Command", "a_t = [dx, dy, dz, drx, dry, drz, grip]\nValidation Error: 7.4 mm", "#e8f8f5", "#117864", title_size=8.5, body_size=7.2)
+    _draw_node(ax, 0.25, 0.23, 0.21, 0.17, "SPATIAL VISION", "ResNet-18 + Softmax2D", "64 Spatial Keypoints (u,v)\n+ 512-D Global -> 192-D e_vis", "#f4ecf7", "#7d3c98", title_size=8.2, body_size=6.9)
+    _draw_node(ax, 0.25, 0.04, 0.21, 0.17, "FOURIER PROPRIO", "6-Band Sinusoidal MLP", "sin/cos(2^k*pi*p) (61-D)\n+ ResidualMLP -> 192-D e_prop", "#ebf5fb", "#1f64a6", title_size=8.2, body_size=6.9)
+    _draw_node(ax, 0.50, 0.23, 0.22, 0.17, "BRANCH 1: MOTION", "Residual Motion Head", "Concat [e_vis ; e_prop] (384-D)\n2x ResMLP(256) -> 6-DoF Delta", "#fef9e7", "#b7950b", title_size=8.2, body_size=6.9)
+    _draw_node(ax, 0.50, 0.04, 0.22, 0.17, "BRANCH 2: GRIPPER", "Decoupled Gripper Head", "Concat [e_vis.detach() ; Fourier]\nResMLP(192->96) -> tanh Grip", "#fdf2e9", "#d35400", title_size=8.2, body_size=6.9)
+    _draw_node(ax, 0.76, 0.10, 0.21, 0.25, "DUAL-LOSS OUTPUT", "7-DoF Action + EMA", "Pos MAE: 0.58 mm (0.0006 m)\n70-Step Rollout ADE: 0.28 cm\nGripper Accuracy: 99.5%", "#e8f8f5", "#117864", title_size=8.4, body_size=7.1)
 
     _draw_arrow(ax, 0.212, 0.315, 0.248, 0.315)
     _draw_arrow(ax, 0.212, 0.125, 0.248, 0.125)
-    _draw_arrow(ax, 0.452, 0.315, 0.488, 0.25)
-    _draw_arrow(ax, 0.452, 0.125, 0.488, 0.20)
-    _draw_arrow(ax, 0.712, 0.23, 0.748, 0.23)
+    _draw_arrow(ax, 0.462, 0.315, 0.498, 0.315)
+    _draw_arrow(ax, 0.462, 0.125, 0.498, 0.28)
+    _draw_arrow(ax, 0.462, 0.125, 0.498, 0.125)
+    _draw_arrow(ax, 0.722, 0.315, 0.758, 0.25)
+    _draw_arrow(ax, 0.722, 0.125, 0.758, 0.19)
 
     out_path = FIG_DIR / "fig3_neural_architectures.png"
     fig.savefig(out_path, dpi=220)
@@ -535,10 +538,9 @@ def _add_page_header_footer(fig, page_num: int, total_pages: int, section_title:
 def build_4page_pdf(fig1_path: Path, fig2_path: Path, fig3_path: Path, fig4_path: Path) -> list[Path]:
     """Compiles the Clear 4-Page A4 Illustrated Technical Report PDF and saves per-page PNG previews."""
     pdf_paths = [
-        ROOT / "MODEL_ARCHITECTURE_AND_PIPELINE_GUIDE.pdf",
         ROOT / "docs" / "MODEL_ARCHITECTURE_AND_PIPELINE_GUIDE.pdf",
     ]
-    pdf_paths[1].parent.mkdir(parents=True, exist_ok=True)
+    pdf_paths[0].parent.mkdir(parents=True, exist_ok=True)
     page_pngs: list[Path] = []
     W_IN, H_IN = 8.27, 11.69
 
@@ -717,12 +719,13 @@ def build_4page_pdf(fig1_path: Path, fig2_path: Path, fig3_path: Path, fig4_path
             w=1.0,
             h=0.23,
             badge="BC POLICY",
-            title="Multimodal Visuomotor Behavioral Cloning Policy (scripts/06_train_policy.py)",
+            title="Enhanced Dual-Head Decoupled Visuomotor BC Policy & Registry (scripts/06_train_policy.py)",
             bullets=[
-                "• What It Does: Predicts the next 7-DoF robot action a_t directly from the live RGB camera image (128x128x3) and current 7-D robot pose.",
-                "• Architecture: (1) ResNet-18 CNN extracts a 512-D visual feature vector from the image; (2) a 2-layer MLP encodes the 7-D robot pose",
-                "  into a 64-D vector; (3) the Fusion MLP (576 -> 256 -> 128 -> 7) outputs [dx, dy, dz, drx, dry, drz, gripper_action].",
-                "• Training & Accuracy: Trained across all 18 videos (1,106 train / 196 val steps), achieving 7.4 mm (0.0074 m) validation position error.",
+                "• Spatial Vision + Fourier Proprioception: ResNet-18 + 2D Spatial Softmax extracts 64 (u,v) keypoint coordinates + 512-D global",
+                "  features (192-D e_vis), while 6-band Multi-Frequency Sinusoidal Positional Encoding lifts 7-D robot pose to 61-D -> 192-D e_prop.",
+                "• Two Decoupled Residual Branches & Kinematic Anchoring: Branch 1 (6-DoF Motion Head) optimizes cm-scale Smooth-L1 delta +",
+                "  trajectory integration + FDE; Branch 2 (1-DoF Gripper Head) optimizes boundary-weighted BCE + MSE, archived in per-dataset registry.",
+                "• Multi-Dataset Accuracy: demo_libero (18 static demos): ADE = 0.34 cm | raw_2 (20 moving-cam demos): ADE = 0.23 cm, Grip = 99.1%.",
             ],
             facecolor="#f9f5fc",
             edgecolor="#7d3c98",
@@ -779,12 +782,12 @@ def build_4page_pdf(fig1_path: Path, fig2_path: Path, fig3_path: Path, fig4_path
             w=1.0,
             h=0.20,
             badge="TRY IT LIVE",
-            title="How to Open & Play with the Interactive LIBERO / MuJoCo 3D Simulator",
+            title="Interactive 3D Simulator & All-in-One 10-Epoch Live Trainer GUIs",
             bullets=[
-                "• Launch Command: Double-click LAUNCH_INTERACTIVE_SIMULATOR.bat or run: python scripts/09_interactive_mujoco_gui.py",
-                "• 3 Interactive Modes: [1] World Model Closed-Loop Rollout  |  [2] Visuomotor BC Policy Rollout  |  [3] Manual Keyboard Control + Live WM",
-                "• Controls: Drag Mouse on 3D View to Orbit 360 deg | Scroll Wheel to Zoom | W/A/S/D/Q/E to Move Panda Arm | SPACE to Grasp Cube |",
-                "  N / P to switch between all 18 Demos | C to randomize Red Cube position on the table | R to Reset.",
+                "• All-in-One Pipeline & Live Trainer: LAUNCH_ALL_IN_ONE_PIPELINE.bat (scripts/10_all_in_one_pipeline_gui.py) runs Stages 0-6 & live plots.",
+                "• Interactive 3D Simulator: LAUNCH_INTERACTIVE_SIMULATOR.bat (scripts/09_interactive_mujoco_gui.py) — [1] WM | [2] BC | [3] Manual.",
+                "• Live Simulator Controls: [O] Open Video Folder | [V] Pick Video | [M] Switch Model (demo_libero / raw_2) | Drag Mouse 360 deg Orbit |",
+                "  W/A/S/D/Q/E to Move Panda Arm | SPACE to Grasp Cube | N / P to switch Demos | C to randomize Cube | R to Reset.",
             ],
             facecolor="#f4f9fd",
             edgecolor="#1f64a8",
@@ -797,7 +800,6 @@ def build_4page_pdf(fig1_path: Path, fig2_path: Path, fig3_path: Path, fig4_path
         page_pngs.append(p4_png)
         plt.close(fig_p4)
 
-    shutil.copy2(pdf_paths[0], pdf_paths[1])
     return page_pngs
 
 

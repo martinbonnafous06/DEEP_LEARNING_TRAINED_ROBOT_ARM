@@ -260,33 +260,44 @@ def process_kinematics_retargeting(
     # Step 1: Hand in table frame
     T_table_to_hand = compose_hand_to_table(T_c2h, T_w2c, T_w2tab)
 
-    # Step 1b: Enhance 3D vertical lift arch and phase-aligned pinch profile for pick-and-place
+    # Step 1b: Direction-agnostic 3D pick-lift-place detection & tabletop workspace clamping for moving cameras
     N_frames = len(T_table_to_hand)
     if N_frames >= 12:
+        T_table_to_hand = T_table_to_hand.copy()
         pos_tab = T_table_to_hand[:, :3, 3]
+        # Clamp tabletop XY to physical tabletop bounds around ArUco Tag 0 so moving-camera edge frames stay in reach
+        pos_tab[:, 0] = np.clip(pos_tab[:, 0], -0.35, 0.35)
+        pos_tab[:, 1] = np.clip(pos_tab[:, 1], -0.35, 0.35)
+
         t_min_s = max(2, int(N_frames * 0.12))
         t_max_p = max(t_min_s + 3, int(N_frames * 0.45))
-        # Pick point is furthest in +X_table (behind the obstacle)
-        t_pick = t_min_s + int(np.argmax(pos_tab[t_min_s:t_max_p, 0]))
+
+        # Direction-agnostic pick point: combines 2D tabletop excursion + biological pinch closure (low grip_cont)
+        disp_from_start = np.linalg.norm(pos_tab[t_min_s:t_max_p, :2] - pos_tab[0:1, :2], axis=-1)
+        disp_norm = disp_from_start / max(float(np.max(disp_from_start)), 1e-5)
+        pinch_close_score = 1.0 - np.clip(grip_cont[t_min_s:t_max_p], 0.0, 1.0)
+        pick_score = 0.60 * disp_norm + 0.40 * pinch_close_score + 0.35 * (pos_tab[t_min_s:t_max_p, 0] / max(float(np.max(np.abs(pos_tab[:, 0]))), 1e-4))
+        t_pick = t_min_s + int(np.argmax(pick_score))
+
         t_min_r = min(N_frames - 3, t_pick + max(8, int(N_frames * 0.22)))
         t_max_r = max(t_min_r + 1, int(N_frames * 0.88))
-        # Place point is closest in +X_table (in front of the obstacle)
-        t_place = t_min_r + int(np.argmin(pos_tab[t_min_r:t_max_r, 0]))
+        # Place point is furthest 2D tabletop displacement from the pick point
+        disp_from_pick = np.linalg.norm(pos_tab[t_min_r:t_max_r, :2] - pos_tab[t_pick : t_pick + 1, :2], axis=-1)
+        t_place = t_min_r + int(np.argmax(disp_from_pick))
 
         horiz_travel = float(np.linalg.norm(pos_tab[t_place, :2] - pos_tab[t_pick, :2]))
-        if horiz_travel > 0.08 and t_place > t_pick + 4:
+        if horiz_travel > 0.04 and t_place > t_pick + 4:
             # Ground pick and place heights to tabletop grasp clearance (~0.02m) and restore 3D lift arch
             z_baseline = np.interp(
                 np.arange(N_frames),
                 [0, t_pick, t_place, N_frames - 1],
-                [max(0.06, pos_tab[0, 2]), 0.018, 0.020, 0.07],
+                [max(0.06, min(0.14, pos_tab[0, 2])), 0.018, 0.020, 0.07],
             )
             z_arch = np.zeros(N_frames, dtype=np.float64)
             span = float(t_place - t_pick)
             for t in range(t_pick, t_place + 1):
                 tau = (t - t_pick) / span
                 z_arch[t] = 0.12 * (np.sin(np.pi * tau) ** 0.85)
-            T_table_to_hand = T_table_to_hand.copy()
             T_table_to_hand[:, 2, 3] = z_baseline + z_arch
 
             # Align gripper aperture to pick-hold-release phases so it opens on approach,

@@ -335,6 +335,7 @@ def track_hands_mediapipe(
     # Optional camera poses from Stage 2 for tabletop depth grounding
     T_w2c_all = None
     cam_cand = [
+        Path("data/slam") / frames_dir.parent.name / frames_dir.name / "camera_poses.npz",
         Path("data/slam") / frames_dir.name / "camera_poses.npz",
         Path("data/slam/camera_poses.npz"),
     ]
@@ -394,40 +395,59 @@ def track_hands_mediapipe(
 
             R_wrist = np.column_stack([v_side, v_normal, v_forward])
 
-            # Compute true metric depth (Z_c) in camera frame
-            z_metric = 0.65
+            # Compute true metric depth (Z_c) in camera frame with foreshortening-proof tabletop plane grounding
+            z_metric = 0.45
             if pixel_landmarks is not None:
-                lm_w = pixel_landmarks[WRIST_IDX]
-                lm_m = pixel_landmarks[MIDDLE_MCP_IDX]
-                px_w = np.array([lm_w.x * w, lm_w.y * h], dtype=np.float64)
-                px_m = np.array([lm_m.x * w, lm_m.y * h], dtype=np.float64)
-                px_dist = float(np.linalg.norm(px_m - px_w))
+                px_all = np.array([[lm.x * w, lm.y * h] for lm in pixel_landmarks], dtype=np.float64)  # (21, 2)
+                px_w = px_all[WRIST_IDX]
+                px_pinch = 0.5 * (px_all[THUMB_TIP_IDX] + px_all[INDEX_TIP_IDX])
 
+                # Multi-bone palm extent prevents single-axis 2D foreshortening when the hand tilts toward a moving camera
+                palm_pairs = [(0, 5), (0, 9), (0, 13), (0, 17), (5, 17)]
+                px_palm_max = max(float(np.linalg.norm(px_all[b2] - px_all[b1])) for b1, b2 in palm_pairs)
                 f_mean = (fx + fy) / 2.0
-                z_apparent = float((f_mean * L_REF_METRES) / max(px_dist, 5.0))
+                z_apparent = float(np.clip((f_mean * L_REF_METRES) / max(px_palm_max, 25.0), 0.12, 0.95))
                 z_metric = z_apparent
 
                 if T_w2c_all is not None and i < len(T_w2c_all):
                     T_tab2cam = T_w2c_all[i]
-                    n_table = T_tab2cam[:3, 2]
-                    p_table = T_tab2cam[:3, 3]
-                    # Unnormalized camera ray so z_plane directly represents camera Z_c coordinate
-                    ray_cam = np.array([(px_w[0] - cx) / fx, (px_w[1] - cy) / fy, 1.0], dtype=np.float64)
-                    denom = float(np.dot(n_table, ray_cam))
-                    if abs(denom) > 1e-4:
-                        h_wrist = 0.065
-                        z_plane = float((np.dot(n_table, p_table) + h_wrist) / denom)
-                        if 0.2 < z_plane < 1.8:
-                            z_metric = 0.55 * z_plane + 0.45 * z_apparent
+                    n_table = T_tab2cam[:3, 2].copy()
+                    p_table = T_tab2cam[:3, 3].copy()
+                    # Ensure n_table points from table toward camera so dot(n_table, p_table) < 0
+                    if float(np.dot(n_table, p_table)) > 0.0:
+                        n_table = -n_table
+                    table_z_ref = float(np.clip(p_table[2], 0.14, 1.10))
 
-                X_c = ((px_w[0] - cx) / fx) * z_metric
-                Y_c = ((px_w[1] - cy) / fy) * z_metric
-                Z_c = z_metric
-                t_wrist = np.array([X_c, Y_c, Z_c], dtype=np.float64)
+                    # Intersect pinch ray (or wrist ray) with tabletop plane at h_hand = 0.045 m above table
+                    ray_pinch = np.array([(px_pinch[0] - cx) / fx, (px_pinch[1] - cy) / fy, 1.0], dtype=np.float64)
+                    denom = float(np.dot(n_table, ray_pinch))
+                    if denom < -0.15:
+                        h_hand = 0.045
+                        z_plane = float((np.dot(n_table, p_table) + h_hand) / denom)
+                        z_plane = float(np.clip(z_plane, max(0.08, table_z_ref * 0.45), min(1.40, table_z_ref * 1.45)))
+                    else:
+                        z_plane = table_z_ref
+
+                    # Clamp apparent depth tightly around the physical tabletop depth so foreshortening never causes 2m spikes
+                    z_app_clamped = float(np.clip(z_apparent, z_plane - 0.05, z_plane + 0.05))
+                    z_metric = 0.82 * z_plane + 0.18 * z_app_clamped
+
+                # Back-project all 21 joints along their true 2D pixel rays at their table-grounded metric depth
+                # so the 3D thumb-index pinch site aligns with the real 2D object and hand under moving camera poses
+                local_d = np.linalg.norm(kpts[MIDDLE_MCP_IDX] - kpts[WRIST_IDX])
+                local_scale = (L_REF_METRES / local_d) if local_d > 1e-6 else 1.0
+                kpts_rel_m = (kpts - kpts[WRIST_IDX]) * local_scale
+
+                kpts_metric = np.zeros((21, 3), dtype=np.float64)
+                for j_i in range(21):
+                    z_j = float(np.clip(z_metric + 0.35 * kpts_rel_m[j_i, 2], 0.08, 1.40))
+                    kpts_metric[j_i, 0] = ((px_all[j_i, 0] - cx) / fx) * z_j
+                    kpts_metric[j_i, 1] = ((px_all[j_i, 1] - cy) / fy) * z_j
+                    kpts_metric[j_i, 2] = z_j
+                t_wrist = kpts_metric[WRIST_IDX].copy()
             else:
                 t_wrist = kpts[WRIST_IDX]
-
-            kpts_metric = t_wrist + (kpts - kpts[WRIST_IDX])
+                kpts_metric = t_wrist + (kpts - kpts[WRIST_IDX])
 
             T_cam_to_hand = np.eye(4, dtype=np.float64)
             T_cam_to_hand[:3, :3] = R_wrist
@@ -456,20 +476,32 @@ def track_hands_mediapipe(
     if detected_count == 0:
         raise RuntimeError("No hand was detected in any frame. Ensure hand is visible and lighting is adequate.")
 
-    # Forward/backward fill missing detections (temporary occlusions during grasp)
-    first_idx = next(i for i, k in enumerate(keypoints_list) if k is not None)
-    last_kpt = keypoints_list[first_idx]
-    last_tf = transforms_list[first_idx]
+    # Smoothly interpolate missing detections across temporary occlusions
+    valid_h_idx = [i for i, k in enumerate(keypoints_list) if k is not None]
+    first_idx = valid_h_idx[0]
+    last_idx = valid_h_idx[-1]
 
-    filled_kpts: list[np.ndarray] = []
-    filled_tfs: list[np.ndarray] = []
+    filled_kpts: list[np.ndarray] = [np.zeros((21, 3), dtype=np.float64) for _ in range(total_frames)]
+    filled_tfs: list[np.ndarray] = [np.eye(4, dtype=np.float64) for _ in range(total_frames)]
 
-    for kpt, tf in zip(keypoints_list, transforms_list):
-        if kpt is not None:
-            last_kpt = kpt
-            last_tf = tf
-        filled_kpts.append(last_kpt)
-        filled_tfs.append(last_tf)
+    for i in range(0, first_idx + 1):
+        filled_kpts[i] = keypoints_list[first_idx].copy()
+        filled_tfs[i] = transforms_list[first_idx].copy()
+    for i in range(last_idx, total_frames):
+        filled_kpts[i] = keypoints_list[last_idx].copy()
+        filled_tfs[i] = transforms_list[last_idx].copy()
+
+    for k_i in range(len(valid_h_idx) - 1):
+        i0, i1 = valid_h_idx[k_i], valid_h_idx[k_i + 1]
+        filled_kpts[i0] = keypoints_list[i0].copy()
+        filled_tfs[i0] = transforms_list[i0].copy()
+        if i1 - i0 > 1:
+            for idx in range(i0 + 1, i1):
+                alpha = (idx - i0) / float(i1 - i0)
+                filled_kpts[idx] = (1.0 - alpha) * keypoints_list[i0] + alpha * keypoints_list[i1]
+                tf_interp = transforms_list[i0].copy()
+                tf_interp[:3, 3] = (1.0 - alpha) * transforms_list[i0][:3, 3] + alpha * transforms_list[i1][:3, 3]
+                filled_tfs[idx] = tf_interp
 
     all_kpts = np.array(filled_kpts, dtype=np.float64)
     all_tfs = np.array(filled_tfs, dtype=np.float64)

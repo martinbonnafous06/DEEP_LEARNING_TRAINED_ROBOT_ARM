@@ -1,0 +1,9 @@
+{
+  "total_frames": 60,
+  "detected_frames": 52,
+  "detection_ratio": 0.8666666666666667,
+  "marker_id": 0,
+  "marker_size_metres": 0.05,
+  "dictionary_name": "DICT_ARUCO_ORIGINAL",
+  "output_dir": "C:\\Users\\marti\\Desktop\\Humanoid\\data\\slam\\raw_2\\demo_0014"
+}

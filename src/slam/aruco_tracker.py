@@ -142,6 +142,33 @@ def estimate_marker_pose_pnp(
     if dist_coeffs is None:
         dist_coeffs = np.zeros((5, 1), dtype=np.float64)
 
+    # Use solvePnPGeneric with IPPE_SQUARE to inspect both planar solutions and avoid mirror flips under camera motion
+    if hasattr(cv2, "solvePnPGeneric"):
+        try:
+            ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(
+                obj_points,
+                img_points,
+                camera_matrix,
+                dist_coeffs,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE,
+            )
+            if ok and len(rvecs) > 0:
+                best_idx = 0
+                best_score = -1e9
+                for c_i, (rv, tv) in enumerate(zip(rvecs, tvecs)):
+                    R_c, _ = cv2.Rodrigues(rv)
+                    z_dist = float(tv.reshape(3)[2])
+                    # Table +Z normal in camera frame must point toward the camera (R_c[2, 2] < 0)
+                    normal_score = -float(R_c[2, 2])
+                    depth_ok = 1.0 if (0.08 < z_dist < 1.80) else -5.0
+                    score = normal_score + depth_ok - 0.15 * c_i
+                    if score > best_score:
+                        best_score = score
+                        best_idx = c_i
+                return rvecs[best_idx], tvecs[best_idx]
+        except Exception:
+            pass
+
     success, rvec, tvec = cv2.solvePnP(
         obj_points,
         img_points,
@@ -289,14 +316,18 @@ def track_camera_with_aruco(
                 )
                 # T_c2m maps points from marker/table frame into camera coordinates: p_cam = T_c2m @ p_table
                 T_c2m = rvec_tvec_to_matrix(rvec, tvec)
-                T_world_to_cam_list[i] = T_c2m
-                detected_count += 1
+                # Validate physical tabletop pose (camera above table looking down, reasonable metric range)
+                z_cam = float(T_c2m[2, 3])
+                normal_z_cam = float(T_c2m[2, 2])
+                if 0.08 < z_cam < 1.80 and normal_z_cam < -0.20:
+                    T_world_to_cam_list[i] = T_c2m
+                    detected_count += 1
 
-                if save_annotated_debug_images and (i % 10 == 0 or i == 0):
-                    annotated = img.copy()
-                    cv2.aruco.drawDetectedMarkers(annotated, [marker_corners], np.array([[marker_id]]))
-                    cv2.drawFrameAxes(annotated, camera_matrix, dist_coeffs if dist_coeffs is not None else np.zeros((5, 1)), rvec, tvec, marker_size * 0.75)
-                    cv2.imwrite(str(debug_dir / f"tag_debug_{i:06d}.jpg"), annotated)
+                    if save_annotated_debug_images and (i % 10 == 0 or i == 0):
+                        annotated = img.copy()
+                        cv2.aruco.drawDetectedMarkers(annotated, [marker_corners], np.array([[marker_id]]))
+                        cv2.drawFrameAxes(annotated, camera_matrix, dist_coeffs if dist_coeffs is not None else np.zeros((5, 1)), rvec, tvec, marker_size * 0.75)
+                        cv2.imwrite(str(debug_dir / f"tag_debug_{i:06d}.jpg"), annotated)
 
     detection_ratio = detected_count / total_frames if total_frames > 0 else 0.0
     logger.info(
@@ -313,21 +344,65 @@ def track_camera_with_aruco(
             f"Check dictionary ('{dictionary_name}') and verify tag visibility."
         )
 
-    # Forward/backward fill missing poses (if marker was briefly occluded by human hand)
-    filled_poses: List[np.ndarray] = []
-    first_valid_idx = next(i for i, p in enumerate(T_world_to_cam_list) if p is not None)
-    first_valid = T_world_to_cam_list[first_valid_idx]
+    # Reject isolated single-frame PnP translation spikes (> 0.10 m jump in 1 frame that immediately reverts)
+    valid_indices = [idx for idx, p in enumerate(T_world_to_cam_list) if p is not None]
+    if len(valid_indices) >= 3:
+        for k_i in range(1, len(valid_indices) - 1):
+            i_prev, i_curr, i_next = valid_indices[k_i - 1], valid_indices[k_i], valid_indices[k_i + 1]
+            p_prev = T_world_to_cam_list[i_prev][:3, 3]
+            p_curr = T_world_to_cam_list[i_curr][:3, 3]
+            p_next = T_world_to_cam_list[i_next][:3, 3]
+            d_prev = float(np.linalg.norm(p_curr - p_prev))
+            d_next = float(np.linalg.norm(p_curr - p_next))
+            d_bridge = float(np.linalg.norm(p_next - p_prev))
+            if d_prev > 0.09 and d_next > 0.09 and d_bridge < 0.09:
+                T_world_to_cam_list[i_curr] = None
 
-    for p in T_world_to_cam_list:
-        if p is not None:
-            last_valid = p
-            filled_poses.append(p)
-        else:
-            filled_poses.append(last_valid if last_valid is not None else first_valid)
+    # Continuous SE(3) interpolation (linear translation + SLERP rotation) across occluded frames
+    # so moving-camera trajectories never freeze or jump when the hand passes over the ArUco tag.
+    from scipy.signal import savgol_filter
+    from scipy.spatial.transform import Rotation, Slerp
 
-    # In our pipeline, Tag 0 anchors the tabletop world coordinate frame:
-    # T_c2m maps table/world points to camera frame (p_cam = T_world_to_cam @ p_world).
+    valid_indices = [idx for idx, p in enumerate(T_world_to_cam_list) if p is not None]
+    first_idx = valid_indices[0]
+    last_idx = valid_indices[-1]
+
+    filled_poses: List[np.ndarray] = [np.eye(4, dtype=np.float64) for _ in range(total_frames)]
+    for idx in range(0, first_idx + 1):
+        filled_poses[idx] = T_world_to_cam_list[first_idx].copy()
+    for idx in range(last_idx, total_frames):
+        filled_poses[idx] = T_world_to_cam_list[last_idx].copy()
+
+    for k_i in range(len(valid_indices) - 1):
+        i0 = valid_indices[k_i]
+        i1 = valid_indices[k_i + 1]
+        T0 = T_world_to_cam_list[i0]
+        T1 = T_world_to_cam_list[i1]
+        filled_poses[i0] = T0.copy()
+        if i1 - i0 > 1:
+            slerp = Slerp([0.0, 1.0], Rotation.from_matrix([T0[:3, :3], T1[:3, :3]]))
+            for idx in range(i0 + 1, i1):
+                alpha = (idx - i0) / float(i1 - i0)
+                T_interp = np.eye(4, dtype=np.float64)
+                T_interp[:3, :3] = slerp([alpha])[0].as_matrix()
+                T_interp[:3, 3] = (1.0 - alpha) * T0[:3, 3] + alpha * T1[:3, 3]
+                filled_poses[idx] = T_interp
+
     T_world_to_cam_arr = np.array(filled_poses, dtype=np.float64)  # (N, 4, 4)
+
+    # Light Savitzky-Golay camera trajectory smoothing to remove high-frequency handheld phone jitter
+    if total_frames >= 7:
+        wl = min(7, total_frames if total_frames % 2 == 1 else total_frames - 1)
+        if wl >= 5:
+            T_world_to_cam_arr[:, :3, 3] = savgol_filter(T_world_to_cam_arr[:, :3, 3], window_length=wl, polyorder=2, axis=0)
+            quats = Rotation.from_matrix(T_world_to_cam_arr[:, :3, :3]).as_quat()
+            for i in range(1, total_frames):
+                if np.dot(quats[i], quats[i - 1]) < 0.0:
+                    quats[i] = -quats[i]
+            quats_s = savgol_filter(quats, window_length=wl, polyorder=2, axis=0)
+            norms = np.linalg.norm(quats_s, axis=-1, keepdims=True)
+            norms[norms < 1e-8] = 1.0
+            T_world_to_cam_arr[:, :3, :3] = Rotation.from_quat(quats_s / norms).as_matrix()
 
     # Save camera poses
     npy_path, npz_path = save_camera_poses(out_dir, T_world_to_cam_arr)
